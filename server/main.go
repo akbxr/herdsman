@@ -143,6 +143,7 @@ func main() {
 	mux.HandleFunc("POST /api/send", s.auth(s.send))
 	mux.HandleFunc("POST /api/keys", s.auth(s.keys))
 	mux.HandleFunc("POST /api/interrupt", s.auth(s.interrupt))
+	mux.HandleFunc("GET /api/attach", s.authQuery(s.attach)) // WebSocket: a live terminal
 
 	srv := &http.Server{Addr: listen, Handler: logRequests(mux), ReadHeaderTimeout: 10 * time.Second}
 	ln, err := net.Listen("tcp", listen)
@@ -252,6 +253,17 @@ func (s *server) auth(h http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		h(w, r)
+	}
+}
+
+// authQuery also takes the token from ?token=, for the WebSocket (a WebView
+// can't set its headers). Request logs print the path only, never the query.
+func (s *server) authQuery(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if t := r.URL.Query().Get("token"); t != "" && r.Header.Get("Authorization") == "" {
+			r.Header.Set("Authorization", "Bearer "+t)
+		}
+		s.auth(h)(w, r)
 	}
 }
 

@@ -101,11 +101,19 @@ The phone needs Tailscale on too, signed in to the same account.
 - **Herd**: every terminal as an ear tag stamped with its address, colored
   by state: yellow needs you, blue working, green done, grey idle. Sorted
   with what needs you first. The tab bar counts the yellow ones.
-- **Agent** (tap a tag): the terminal's screen and history, refreshed every
-  1.5 s; keys for answering menus (Esc, arrows, Tab, Enter, y, n, Ctrl+C);
-  a message box (`hc send`); **Show on Mac** brings its tab up on the Mac.
-  If the agent is asking something, a message is held back until you choose
-  **Send anyway**.
+- **Agent** (tap a tag): the terminal itself, live (`hc attach` over a
+  WebSocket, drawn by xterm.js with the Mac's Tokyo Night colors and Nerd
+  Font icons). Tap it to type: the phone's keyboard goes straight to the
+  program, without suggestions or autocorrect. The key bar adds Esc, Tab,
+  Ctrl (sticky: tap it, then a letter), arrows, Enter and Paste, enough to
+  answer a menu without opening the keyboard. **Show on Mac** brings its
+  tab up on the Mac.
+
+  Size: herdr-core gives a terminal the size of whoever was active last. While
+  you only watch, it keeps the Mac's size and the font shrinks to fit the
+  width; once you type on the phone, the program reflows to the phone's size
+  (the line under the terminal says which), and typing on the Mac takes it
+  back.
 - **Screen**: a picture of the Herdr window every 3 s (pinch to zoom,
   double-tap to reset), the Mac's tabs to switch between, and **Next layout**.
 
@@ -124,6 +132,10 @@ All under `/api`, with `Authorization: Bearer <token>` (except `/pair`):
 | POST | `/send` | `{terminal, text, force?}` → `hc send` |
 | POST | `/keys` | `{terminal, keys: [...]}` → `hc keys` |
 | POST | `/interrupt` | `{terminal}` → `hc interrupt` |
+| GET | `/attach?terminal=t12&cols=&rows=&token=` | WebSocket: `hc attach` in a PTY; binary frames are terminal bytes both ways, text frames `{"type":"size"}` (server) and `{"type":"resize"}` (phone) |
+
+The terminal page (`android/app/src/main/assets/term/terminal.html`) also
+opens in a desktop browser for debugging: `terminal.html#ws=<attach URL>`.
 
 ## Snapshots
 

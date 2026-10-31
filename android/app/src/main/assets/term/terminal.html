@@ -1,0 +1,165 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<link rel="stylesheet" href="xterm.css">
+<style>
+  @font-face { font-family: "JBM"; src: url("JetBrainsMono-Regular.ttf"); font-weight: 400; }
+  @font-face { font-family: "JBM"; src: url("JetBrainsMono-Bold.ttf"); font-weight: 700; }
+  /* Prompt and status-line icons (Powerlevel, starship): Nerd Font symbols. */
+  @font-face { font-family: "NerdSymbols"; src: url("SymbolsNerdFontMono-Regular.ttf"); }
+  html, body { margin: 0; height: 100%; background: #24283b; overflow: hidden; }
+  /* The terminal keeps the real terminal's size; when that is wider or
+     taller than the phone even at the smallest font, this pans. */
+  #wrap { position: absolute; inset: 0; overflow: auto; padding: 6px 6px 0 6px; box-sizing: border-box;
+          -webkit-tap-highlight-color: transparent; }
+  .xterm .xterm-viewport { background: #24283b !important; overflow-y: hidden; }
+  /* The phone's own keyboard comes from the app, never from xterm's textarea. */
+  .xterm-helper-textarea { pointer-events: none; }
+</style>
+</head>
+<body>
+<div id="wrap"><div id="term"></div></div>
+<script src="xterm.js"></script>
+<script>
+(() => {
+  const BASE = 13, MIN = 5.5;            // font px: readable, and the smallest when fitting
+  const android = window.Android || { onStatus() {}, onTap() {} };
+  const wrap = document.getElementById("wrap");
+  const term = new Terminal({
+    fontFamily: "JBM, NerdSymbols, monospace", fontSize: BASE, lineHeight: 1.0, scrollback: 1000,
+    cursorBlink: true, allowProposedApi: true, convertEol: false, macOptionIsMeta: true,
+    theme: {   // Tokyo Night Storm, as on the Mac
+      background: "#24283b", foreground: "#c0caf5", cursor: "#c0caf5", cursorAccent: "#24283b",
+      selectionBackground: "#2e3c64",
+      black: "#1d202f", red: "#f7768e", green: "#9ece6a", yellow: "#e0af68",
+      blue: "#7aa2f7", magenta: "#bb9af7", cyan: "#7dcfff", white: "#a9b1d6",
+      brightBlack: "#414868", brightRed: "#ff899d", brightGreen: "#9fe044", brightYellow: "#faba4a",
+      brightBlue: "#8db0ff", brightMagenta: "#c7a9ff", brightCyan: "#a4daff", brightWhite: "#c0caf5",
+    },
+  });
+  term.open(document.getElementById("term"));
+  term.textarea.setAttribute("inputmode", "none");   // no soft keyboard from the web side
+  term.textarea.setAttribute("tabindex", "-1");
+
+  let ws = null, url = null, ended = false, retry = 0;
+  let real = { cols: term.cols, rows: term.rows };   // the core terminal's size
+  let phone = { cols: 0, rows: 0 };                  // what fits this screen at BASE
+  const enc = new TextEncoder();
+
+  function status(state, extra) { android.onStatus(JSON.stringify(Object.assign({ state }, extra || {}))); }
+
+  // The cell size at BASE, measured once while the font really is BASE
+  // (scaling a small font's cells up is off: xterm rounds to pixels).
+  let base = null;
+  function measureBase() {
+    const screen = term.element.querySelector(".xterm-screen");
+    const r = screen.getBoundingClientRect();
+    if (term.options.fontSize === BASE && r.width) base = { w: r.width / term.cols, h: r.height / term.rows };
+  }
+  function cellAt(px) {
+    if (!base) measureBase();
+    return base ? { w: base.w * px / BASE, h: base.h * px / BASE } : { w: 0, h: 0 };
+  }
+
+  function view() { return { w: wrap.clientWidth - 12, h: wrap.clientHeight - 6 }; }
+
+  // Shrinks the font until the real terminal's width fits the phone.
+  function fit() {
+    const v = view(), c = cellAt(BASE);
+    if (!c.w) return;
+    const px = Math.max(MIN, Math.min(BASE, Math.floor((BASE * v.w / (real.cols * c.w)) * 2) / 2));
+    if (term.options.fontSize !== px) term.options.fontSize = px;
+    const driving = Math.abs(real.cols - phone.cols) <= 1 && Math.abs(real.rows - phone.rows) <= 1;
+    status("size", { cols: real.cols, rows: real.rows, phoneCols: phone.cols, phoneRows: phone.rows, driving, font: px });
+  }
+
+  // What fits this screen at the readable font; sent so that typing here
+  // gives the terminal the phone's size.
+  function measurePhone() {
+    const v = view(), c = cellAt(BASE);
+    if (!c.w) return;
+    const next = { cols: Math.max(20, Math.floor(v.w / c.w)), rows: Math.max(5, Math.floor(v.h / c.h)) };
+    if (next.cols === phone.cols && next.rows === phone.rows) return;
+    phone = next;
+    if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "resize", cols: phone.cols, rows: phone.rows }));
+  }
+
+  function send(text) {
+    if (ws && ws.readyState === 1 && text) ws.send(enc.encode(text));
+  }
+  term.onData(send);   // xterm's replies to the program's queries (colors, device attributes)
+
+  function connect() {
+    if (!url || ended) return;
+    measurePhone();
+    status("connecting");
+    const u = url + "&cols=" + phone.cols + "&rows=" + phone.rows;
+    ws = new WebSocket(u);
+    ws.binaryType = "arraybuffer";
+    ws.onopen = () => { retry = 0; term.reset(); status("live"); };
+    ws.onmessage = (e) => {
+      if (typeof e.data !== "string") { term.write(new Uint8Array(e.data)); return; }
+      const m = JSON.parse(e.data);
+      if (m.type === "size") {
+        real = { cols: m.cols, rows: m.rows };
+        term.resize(m.cols, m.rows);
+        fit();
+      } else if (m.type === "exit") {
+        if (/ended/.test(m.reason)) { ended = true; status("ended", { reason: m.reason }); }
+      }
+    };
+    ws.onclose = () => {
+      ws = null;
+      if (ended) return;
+      retry = Math.min(retry + 1, 6);
+      status("reconnecting", { inMs: 500 * retry });
+      setTimeout(connect, 500 * retry);
+    };
+  }
+
+  // Keys from the app's key bar, encoded the way the program asked for
+  // (application cursor keys turn arrows into ESC O A…).
+  const app = () => term.modes.applicationCursorKeysMode;
+  const KEYS = {
+    esc: () => "\x1b", tab: () => "\t", enter: () => "\r", backspace: () => "\x7f",
+    up: () => app() ? "\x1bOA" : "\x1b[A", down: () => app() ? "\x1bOB" : "\x1b[B",
+    right: () => app() ? "\x1bOC" : "\x1b[C", left: () => app() ? "\x1bOD" : "\x1b[D",
+    home: () => "\x1b[H", end: () => "\x1b[F", pgup: () => "\x1b[5~", pgdn: () => "\x1b[6~", del: () => "\x1b[3~",
+    shifttab: () => "\x1b[Z",
+  };
+
+  // Taps open the phone's keyboard (in the app); drags pan.
+  let start = null;
+  wrap.addEventListener("touchstart", (e) => { const t = e.touches[0]; start = { x: t.clientX, y: t.clientY }; }, { passive: true });
+  wrap.addEventListener("touchend", (e) => {
+    const t = e.changedTouches[0];
+    if (start && Math.hypot(t.clientX - start.x, t.clientY - start.y) < 10) android.onTap();
+    start = null;
+  }, { passive: true });
+
+  new ResizeObserver(() => { measurePhone(); fit(); }).observe(wrap);
+
+  window.hr = {
+    connect(wsUrl) {
+      url = wsUrl; ended = false;
+      document.fonts.ready.then(() => {
+        // Measure with the real font loaded, then go.
+        if (!base) { term.options.fontSize = BASE; requestAnimationFrame(() => requestAnimationFrame(() => { measureBase(); connect(); })); }
+        else connect();
+      });
+    },
+    input(text) { term.scrollToBottom(); send(text); },
+    key(name) { const k = KEYS[name]; if (k) { term.scrollToBottom(); send(k()); } },
+    paste(text) { term.paste(text); },
+    close() { ended = true; if (ws) ws.close(); },
+  };
+  status("ready");
+  // Debugging in a desktop browser: terminal.html#ws=<attach URL with token>
+  const m = location.hash.match(/^#ws=(.+)$/);
+  if (m) hr.connect(decodeURIComponent(m[1]));
+})();
+</script>
+</body>
+</html>

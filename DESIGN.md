@@ -61,6 +61,15 @@ Herd                          Agent (tap a tag)
 
 The herd is sorted by what needs you: needs you, working, done, idle.
 
+## The agent screen is a terminal
+
+Tapping a tag opens the terminal itself, not a transcript of it: the same
+bytes the Mac's Herdr gets, drawn by xterm.js in the Mac's colors, and the
+phone's keyboard typing into it. Around it, only what a phone keyboard lacks
+(Esc, Tab, sticky Ctrl, arrows, Enter, Paste) and one plain line saying whose
+size it has, because the program reflows when the phone takes over and that
+should never be a surprise.
+
 ## Signature
 
 The ear tags, and one motion tied to them: a tag that turns yellow swings

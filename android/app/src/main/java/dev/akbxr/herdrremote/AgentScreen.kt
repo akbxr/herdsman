@@ -1,5 +1,9 @@
 package dev.akbxr.herdrremote
 
+import android.content.ClipboardManager
+import android.content.Context
+import android.view.ViewGroup
+import android.widget.FrameLayout
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -11,23 +15,18 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -37,112 +36,98 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.delay
+import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 
-/** Keys a terminal agent's questions need: menus, confirmations, stopping. */
+private val TermBg = Color(0xFF24283B)  // the terminal's own background (Tokyo Night Storm)
+
+/** The key bar: what a phone keyboard lacks, and enough to answer a menu without one. */
 private val KEYS = listOf(
-    "Esc" to "esc", "↑" to "up", "↓" to "down", "←" to "left", "→" to "right",
-    "Tab" to "tab", "⏎" to "enter", "y" to "y", "n" to "n", "Ctrl+C" to "ctrl+c",
+    "Esc" to "esc", "Tab" to "tab", "Ctrl" to "ctrl",
+    "↑" to "up", "↓" to "down", "←" to "left", "→" to "right", "⏎" to "enter",
+    "Paste" to "paste", "⌨" to "keyboard",
 )
 
 @Composable
 fun AgentScreen(api: Api, terminal: String, agent: Agent?, onBack: () -> Unit) {
-    var screen by remember(terminal) { mutableStateOf<String?>(null) }
+    val context = LocalContext.current
+    var status by remember { mutableStateOf(TermStatus()) }
+    var ctrl by remember { mutableStateOf(false) }
     var problem by remember { mutableStateOf<String?>(null) }
-    var message by remember { mutableStateOf("") }
-    var sending by remember { mutableStateOf(false) }
-    var refusedText by remember { mutableStateOf<String?>(null) }  // a send the program refused
     val scope = rememberCoroutineScope()
-    val vertical = rememberScrollState()
-    val horizontal = rememberScrollState()
-    val name = agent?.title ?: terminal  // for messages below
+    val controller = remember(terminal) { TerminalController(context) { status = it } }
+    controller.onCtrlUsed = { ctrl = false }
 
-    // The terminal, refreshed while open; stays at the bottom unless you scrolled up.
+    // Attached only while on screen: in a pocket, nothing streams.
     val onScreen = rememberOnScreen()
-    LaunchedEffect(terminal, onScreen) {
-        if (!onScreen) return@LaunchedEffect
-        while (true) {
-            runCatching { api.read(terminal) }
-                .onSuccess { text ->
-                    val atBottom = vertical.value >= vertical.maxValue - 40
-                    screen = text
-                    problem = null
-                    if (atBottom) {
-                        delay(16)
-                        vertical.scrollTo(vertical.maxValue)
-                    }
-                }
-                .onFailure { problem = it.advice() }
-            delay(1500)
-        }
+    LaunchedEffect(controller, onScreen) {
+        if (onScreen) controller.connect(api, terminal)
+        else controller.web.evaluateJavascript("hr.close()", null)
     }
-
-    fun act(block: suspend () -> Unit) {
-        scope.launch { runCatching { block() }.onFailure { problem = it.advice() } }
-    }
-
-    fun send(force: Boolean) {
-        val text = (refusedText ?: message).trim()
-        if (text.isEmpty() || sending) return
-        sending = true
-        scope.launch {
-            runCatching { api.send(terminal, text, force) }
-                .onSuccess { message = ""; refusedText = null; problem = null }
-                .onFailure {
-                    // hc send won't type into a program that is asking something.
-                    if (!force && agent?.state == State.NeedsYou) {
-                        refusedText = text
-                        problem = "$name is waiting on a question. Answer it with the keys, or send anyway to type into it."
-                    } else {
-                        problem = it.advice()
-                    }
-                }
-            sending = false
-        }
-    }
+    DisposableEffect(controller) { onDispose { controller.close() } }
 
     AgentContent(
-        terminal = terminal, agent = agent, screen = screen, problem = problem,
-        message = message, onMessage = { message = it; refusedText = null },
-        sending = sending, refused = refusedText != null,
-        vertical = vertical, horizontal = horizontal,
+        terminal = terminal, agent = agent, status = status, ctrl = ctrl, problem = problem,
         onBack = onBack,
-        onShowOnMac = { agent?.let { a -> act { api.command("tab.select", JSONObject().put("id", a.tabId)) } } },
-        onKey = { key -> act { api.keys(terminal, key) } },
-        onSend = { force -> send(force) },
-    )
+        onShowOnMac = {
+            agent?.let { a ->
+                scope.launch {
+                    runCatching { api.command("tab.select", JSONObject().put("id", a.tabId)) }
+                        .onFailure { problem = it.advice() }
+                }
+            }
+        },
+        onKey = { key ->
+            when (key) {
+                "ctrl" -> { ctrl = !ctrl; controller.ctrl = ctrl; controller.showKeyboard() }
+                "keyboard" -> controller.showKeyboard()
+                "paste" -> {
+                    val clip = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    clip.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString()
+                        ?.takeIf { it.isNotEmpty() }?.let(controller::paste)
+                }
+                else -> controller.key(key)
+            }
+        },
+    ) {
+        AndroidView(
+            factory = {
+                FrameLayout(it).apply {
+                    (controller.web.parent as? ViewGroup)?.removeView(controller.web)
+                    (controller.input.parent as? ViewGroup)?.removeView(controller.input)
+                    addView(controller.web, FrameLayout.LayoutParams(-1, -1))
+                    addView(controller.input, FrameLayout.LayoutParams(1, 1))
+                }
+            },
+            modifier = Modifier.fillMaxSize(),
+        )
+    }
 }
 
-/** What the agent screen shows, without the network (also used for snapshots). */
+/** The agent screen around its terminal (the slot), without the network. */
 @Composable
 fun AgentContent(
     terminal: String,
     agent: Agent?,
-    screen: String?,
+    status: TermStatus,
+    ctrl: Boolean,
     problem: String?,
-    message: String,
-    onMessage: (String) -> Unit,
-    sending: Boolean,
-    refused: Boolean,
-    vertical: ScrollState,
-    horizontal: ScrollState,
     onBack: () -> Unit,
     onShowOnMac: () -> Unit,
     onKey: (String) -> Unit,
-    onSend: (force: Boolean) -> Unit,
+    terminalSlot: @Composable () -> Unit,
 ) {
     val name = agent?.title ?: terminal
     Column(Modifier.fillMaxSize()) {
-        // Heading: back, the tag's number and name, and the way to bring it up on the Mac.
+        // Heading: back, the tag, its name and state, and the way to bring it up on the Mac.
         Row(
-            Modifier.fillMaxWidth().padding(start = 4.dp, end = 8.dp, top = 6.dp, bottom = 6.dp),
+            Modifier.fillMaxWidth().padding(start = 4.dp, end = 8.dp, top = 4.dp, bottom = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Box(
@@ -150,7 +135,7 @@ fun AgentContent(
                 contentAlignment = Alignment.Center,
             ) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to the herd", tint = Ink.text) }
             if (agent != null) {
-                EarTag(agent, width = 30.dp)
+                EarTag(agent, width = 28.dp)
                 Spacer(Modifier.width(12.dp))
             }
             Column(Modifier.weight(1f)) {
@@ -160,99 +145,69 @@ fun AgentContent(
                     style = Type.small, color = agent?.state?.takeIf { it != State.Idle }?.tagColor() ?: Ink.dust, maxLines = 1,
                 )
             }
-            if (agent != null) {
-                QuietButton("Show on Mac", color = Ink.text, onClick = onShowOnMac)
-            }
+            if (agent != null) QuietButton("Show on Mac", color = Ink.text, onClick = onShowOnMac)
         }
 
-        // The terminal well.
+        // The terminal itself, edge to edge.
         Box(
             Modifier
                 .weight(1f)
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp)
-                .clip(RoundedCornerShape(14.dp))
-                .background(Ink.pen)
-                .border(1.dp, Ink.rule, RoundedCornerShape(14.dp)),
+                .padding(horizontal = 8.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(TermBg)
+                .border(1.dp, Ink.rule, RoundedCornerShape(12.dp)),
         ) {
-            val text = screen
-            if (text == null) {
-                Text("Reading $terminal…", style = Type.small, color = Ink.dust, modifier = Modifier.padding(16.dp))
-            } else {
-                Text(
-                    text.ifEmpty { "(empty screen)" },
-                    style = Type.terminal,
-                    color = Ink.text,
-                    softWrap = false,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .verticalScroll(vertical)
-                        .horizontalScroll(horizontal)
-                        .padding(12.dp),
-                )
+            terminalSlot()
+            val overlay = when (status.state) {
+                "ready", "connecting" -> "Connecting to $terminal…"
+                "reconnecting" -> "Connection lost. Reconnecting…"
+                "ended" -> status.reason?.replaceFirstChar { it.uppercase() } ?: "The program has ended."
+                else -> null
+            }
+            overlay?.let {
+                Box(
+                    Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 10.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(Ink.pen)
+                        .border(1.dp, Ink.rule, RoundedCornerShape(10.dp))
+                        .padding(horizontal = 12.dp, vertical = 7.dp),
+                ) { Text(it, style = Type.small, color = Ink.text) }
             }
         }
 
-        problem?.let {
-            Spacer(Modifier.height(10.dp))
-            Notice(it, Modifier.padding(horizontal = 12.dp))
+        // Whose size the terminal has: typing here takes it over.
+        val sizeLine = when {
+            status.cols == 0 -> " "
+            status.driving -> "Sized for this phone · ${status.cols}×${status.rows}"
+            else -> "The Mac's size, ${status.cols}×${status.rows} · type to fit it to this phone"
         }
+        Text(sizeLine, style = Type.small, color = Ink.dust, maxLines = 1, overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(start = 14.dp, end = 14.dp, top = 8.dp))
 
-        // Keys, for answering menus and confirmations.
+        problem?.let { Notice(it, Modifier.padding(horizontal = 8.dp, vertical = 6.dp)) }
+
+        // Key bar.
         Row(
-            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 10.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             KEYS.forEach { (label, key) ->
+                val on = key == "ctrl" && ctrl
                 Box(
                     Modifier
                         .heightIn(min = 44.dp)
                         .clip(RoundedCornerShape(10.dp))
-                        .background(Ink.pen)
-                        .border(1.dp, Ink.rule, RoundedCornerShape(10.dp))
+                        .background(if (on) Ink.text else Ink.pen)
+                        .border(1.dp, if (on) Ink.text else Ink.rule, RoundedCornerShape(10.dp))
                         .clickable(role = Role.Button) { onKey(key) }
-                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                        .padding(horizontal = 13.dp, vertical = 10.dp),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Text(label, style = Type.label.copy(fontFamily = JetBrains), color = if (key == "ctrl+c") Ink.red else Ink.text)
+                    Text(label, style = Type.label.copy(fontFamily = JetBrains), color = if (on) Ink.night else Ink.text)
                 }
-            }
-        }
-
-        // Message box.
-        Row(
-            Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, bottom = 12.dp),
-            verticalAlignment = Alignment.Bottom,
-        ) {
-            BasicTextField(
-                value = message,
-                onValueChange = onMessage,
-                textStyle = Type.body.copy(color = Ink.text),
-                cursorBrush = SolidColor(Ink.yellow),
-                maxLines = 5,
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                keyboardActions = KeyboardActions(onSend = { onSend(false) }),
-                modifier = Modifier.weight(1f),
-                decorationBox = { inner ->
-                    Box(
-                        Modifier
-                            .fillMaxWidth()
-                            .heightIn(min = 48.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(Ink.pen)
-                            .border(1.dp, Ink.rule, RoundedCornerShape(12.dp))
-                            .padding(horizontal = 14.dp, vertical = 13.dp),
-                    ) {
-                        if (message.isEmpty()) Text("Message $name…", style = Type.body, color = Ink.dust.copy(alpha = 0.7f))
-                        inner()
-                    }
-                },
-            )
-            Spacer(Modifier.width(8.dp))
-            if (refused) {
-                PrimaryButton("Send anyway", enabled = !sending) { onSend(true) }
-            } else {
-                PrimaryButton(if (sending) "Sending…" else "Send", enabled = !sending && message.isNotBlank()) { onSend(false) }
             }
         }
     }

@@ -4,7 +4,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.material3.Text
+import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import app.cash.paparazzi.DeviceConfig
@@ -76,26 +78,30 @@ class ScreensSnapshotTest {
         }
     }
 
-    @Test fun agent() = paparazzi.snapshot {
+    // The terminal is a WebView (xterm.js), which layoutlib can't draw: the
+    // slot shows the sample screen as text to check the chrome around it.
+    @Composable
+    private fun FakeTerminal() {
+        Text(terminal, style = Type.terminal, color = Ink.text, softWrap = false, modifier = Modifier.padding(8.dp))
+    }
+
+    @Test fun agentWatching() = paparazzi.snapshot {
         Frame {
             AgentContent(
-                terminal = "t12", agent = herd.agents[0], screen = terminal, problem = null,
-                message = "", onMessage = {}, sending = false, refused = false,
-                vertical = rememberScrollState(), horizontal = rememberScrollState(),
-                onBack = {}, onShowOnMac = {}, onKey = {}, onSend = {},
-            )
+                terminal = "t12", agent = herd.agents[0], problem = null, ctrl = false,
+                status = TermStatus(state = "live", cols = 165, rows = 36, phoneCols = 52, phoneRows = 40),
+                onBack = {}, onShowOnMac = {}, onKey = {},
+            ) { FakeTerminal() }
         }
     }
 
-    @Test fun agentRefused() = paparazzi.snapshot {
+    @Test fun agentDriving() = paparazzi.snapshot {
         Frame {
             AgentContent(
-                terminal = "t12", agent = herd.agents[0], screen = terminal,
-                problem = "tego is waiting on a question. Answer it with the keys, or send anyway to type into it.",
-                message = "run only the Status tests", onMessage = {}, sending = false, refused = true,
-                vertical = rememberScrollState(), horizontal = rememberScrollState(),
-                onBack = {}, onShowOnMac = {}, onKey = {}, onSend = {},
-            )
+                terminal = "t12", agent = herd.agents[0], problem = null, ctrl = true,
+                status = TermStatus(state = "reconnecting", cols = 52, rows = 40, phoneCols = 52, phoneRows = 40, driving = true),
+                onBack = {}, onShowOnMac = {}, onKey = {},
+            ) { FakeTerminal() }
         }
     }
 }

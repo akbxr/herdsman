@@ -47,7 +47,7 @@ data class Herd(val layout: String, val agents: List<Agent>, val tabs: List<Tab>
 
 class ApiError(message: String) : IOException(message)
 
-class Api(val base: String, private val token: String) {
+class Api(val base: String, val token: String) {
 
     private fun open(path: String, method: String, timeoutMs: Int): HttpURLConnection {
         val c = URL(base.trimEnd('/') + path).openConnection() as HttpURLConnection
