@@ -48,25 +48,65 @@ func usage() {
 	fmt.Fprintf(os.Stderr, `herdr-remote: control the Herdr app on this Mac from a phone.
 
 Usage:
-  herdr-remote [flags]        serve, and show a QR code to pair a phone
-  herdr-remote pair [flags]   show the QR code and a fresh pairing code again
+  herdr-remote install     run at login (launchd), and show a QR code to pair a phone
+  herdr-remote pair        show the QR code and a fresh pairing code
+  herdr-remote status      whether it runs, where, and if it answers
+  herdr-remote uninstall   stop running at login (keeps the token)
+  herdr-remote [serve]     serve in this terminal
 
-Flags:
+Flags (install passes them on to the server):
 `)
 	flag.PrintDefaults()
 }
 
 func main() {
 	args := os.Args[1:]
-	pairOnly := len(args) > 0 && args[0] == "pair"
-	if pairOnly {
-		args = args[1:]
+	cmd := "serve"
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		cmd, args = args[0], args[1:]
 	}
 	addr := flag.String("addr", "", "listen address (default: this Mac's Tailscale IP, port 7710)")
 	tokenFile := flag.String("token-file", defaultTokenFile(), "file holding the access token (created if missing)")
 	newToken := flag.Bool("new-token", false, "replace the token (phones paired before must pair again)")
 	flag.Usage = usage
 	flag.CommandLine.Parse(args)
+	log.SetFlags(log.LstdFlags)
+
+	switch cmd {
+	case "serve":
+	case "pair", "status", "install":
+		token, err := loadToken(*tokenFile, *newToken)
+		if err != nil {
+			log.Fatalf("token: %v", err)
+		}
+		var run func() error
+		switch cmd {
+		case "pair":
+			run = func() error { return pairNow(*addr, string(token), *tokenFile) }
+		case "status":
+			run = func() error { return status(*addr, string(token)) }
+		case "install":
+			run = func() error { return install(*addr, string(token), *tokenFile) }
+		}
+		if err := run(); err != nil {
+			fmt.Fprintln(os.Stderr, "herdr-remote:", err)
+			os.Exit(1)
+		}
+		return
+	case "uninstall":
+		if err := uninstall(); err != nil {
+			fmt.Fprintln(os.Stderr, "herdr-remote:", err)
+			os.Exit(1)
+		}
+		return
+	case "help":
+		usage()
+		return
+	default:
+		fmt.Fprintf(os.Stderr, "herdr-remote: unknown command %q\n\n", cmd)
+		usage()
+		os.Exit(2)
+	}
 
 	token, err := loadToken(*tokenFile, *newToken)
 	if err != nil {
@@ -74,19 +114,18 @@ func main() {
 	}
 	listen := *addr
 	if listen == "" {
+		// Under launchd this starts at login, often before Tailscale is up: wait for it.
 		ip := tailscaleIP()
 		if ip == "" {
-			log.Fatal("no Tailscale address found: start Tailscale, or pass -addr (e.g. -addr 127.0.0.1:7710 behind an SSH tunnel)")
+			log.Print("waiting for Tailscale (or pass -addr, e.g. -addr 127.0.0.1:7710 behind an SSH tunnel)")
+			for ip == "" {
+				time.Sleep(3 * time.Second)
+				ip = tailscaleIP()
+			}
 		}
 		listen = net.JoinHostPort(ip, "7710")
 	}
 	host, _ := os.Hostname()
-	if pairOnly {
-		if err := printPairing(os.Stdout, "http://"+listen, string(token), host, *tokenFile); err != nil {
-			log.Fatal(err)
-		}
-		return
-	}
 
 	s := &server{token: token, tokenFile: *tokenFile, herdr: findTool("herdr-app"), hc: findTool("hc")}
 	if s.shotDir, err = os.MkdirTemp("", "herdr-remote-"); err != nil {
@@ -110,9 +149,12 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Printf("herdr-remote %s listening on http://%s\n", version, listen)
-	if err := printPairing(os.Stdout, "http://"+listen, string(token), host, *tokenFile); err != nil {
-		log.Printf("pairing code: %v", err)
+	log.Printf("herdr-remote %s listening on http://%s", version, listen)
+	// The QR code is for a person at a terminal, not for launchd's log.
+	if isTerminal(os.Stdout) {
+		if err := printPairing(os.Stdout, "http://"+listen, string(token), host, *tokenFile); err != nil {
+			log.Printf("pairing code: %v", err)
+		}
 	}
 	log.Fatal(srv.Serve(ln))
 }
@@ -160,8 +202,34 @@ func findTool(name string) string {
 	return name
 }
 
-// tailscaleIP returns this machine's Tailscale IPv4 (100.64.0.0/10), if any.
+// tailscaleIP returns this machine's Tailscale IPv4, or "" while Tailscale
+// is off. It asks the tailscale CLI: other VPNs use the same 100.64.0.0/10
+// range (Cloudflare WARP takes 100.96.x.x), so an interface with such an
+// address isn't necessarily Tailscale's.
 func tailscaleIP() string {
+	for _, name := range []string{"tailscale", "/usr/local/bin/tailscale", "/opt/homebrew/bin/tailscale",
+		"/Applications/Tailscale.app/Contents/MacOS/Tailscale"} {
+		bin, err := exec.LookPath(name)
+		if err != nil {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		out, err := exec.CommandContext(ctx, bin, "ip", "-4").Output()
+		cancel()
+		if err != nil {
+			return "" // installed but not running
+		}
+		ip := strings.TrimSpace(strings.SplitN(string(out), "\n", 2)[0])
+		if net.ParseIP(ip) != nil {
+			return ip
+		}
+		return ""
+	}
+	return cgnatIP() // no CLI: best guess from the interfaces
+}
+
+// cgnatIP returns the first interface address in 100.64.0.0/10.
+func cgnatIP() string {
 	_, cgnat, _ := net.ParseCIDR("100.64.0.0/10")
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {

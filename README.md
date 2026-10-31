@@ -22,19 +22,22 @@ commands on your Mac. So:
 - Don't expose it on the internet or forward the port on your router.
 - `herdr-remote -new-token` replaces the token (phones pair again).
 
-## Mac: run the server
+## Mac: install the server
+
+Once:
 
 ```sh
 cd server
-go build -o ~/.local/bin/herdr-remote .
-herdr-remote
+go run . install
 ```
 
-It shows a QR code for pairing a phone, and under it the address and a
-six-digit code:
+That copies `herdr-remote` to `~/.local/bin`, and starts it at every login
+through launchd (it restarts if it stops, and waits for Tailscale if it
+starts first). Then it shows a QR code for pairing a phone, and under it the
+address and a six-digit code:
 
 ```
-herdr-remote 0.1.0 listening on http://100.x.y.z:7710
+Installed: herdr-remote now starts at login and restarts if it stops.
 
 Pair a phone: open Herdr Remote and tap Scan the code.
 
@@ -46,35 +49,27 @@ No camera? Type the address and this code (works once, for 10 minutes):
   code     408 971
 ```
 
-`herdr-remote pair` shows a QR code and a fresh code again, also while the
-server runs elsewhere (under launchd).
+After that:
 
-Tailscale has to be on (`tailscale up`, or the menu bar app). Without it,
-use an SSH tunnel instead: `herdr-remote -addr 127.0.0.1:7710` on the Mac,
-and on the phone (Termux) `ssh -L 7710:127.0.0.1:7710 akbar@<mac>`, then pair
-with `127.0.0.1:7710`.
+| Command | Does |
+|---|---|
+| `herdr-remote pair` | QR code and a fresh code, to pair another phone |
+| `herdr-remote status` | whether it runs, its address, and if it answers |
+| `herdr-remote uninstall` | stop starting at login (the token stays) |
+| `herdr-remote` | serve in the terminal instead, without launchd |
+
+Run `go run . install` again after changing the code: it replaces the binary
+and restarts the server. The log is `~/Library/Logs/herdr-remote.log`.
+
+Tailscale has to be on (`tailscale up`, or the menu bar app); the address is
+what `tailscale ip -4` says. Without Tailscale, use an SSH tunnel:
+`herdr-remote install -addr 127.0.0.1:7710` on the Mac, and on the phone
+(Termux) `ssh -L 7710:127.0.0.1:7710 akbar@<mac>`, then pair with
+`127.0.0.1:7710`.
 
 The token lives in `~/.config/herdr-remote/token` (mode 0600). The QR code
 holds it; the six-digit code trades for it once (`POST /api/pair`), for ten
 minutes, and stops working after five wrong tries.
-
-### Keep it running (optional)
-
-`~/Library/LaunchAgents/dev.akbxr.herdr-remote.plist`:
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-  <key>Label</key><string>dev.akbxr.herdr-remote</string>
-  <key>ProgramArguments</key><array><string>/Users/akbar/.local/bin/herdr-remote</string></array>
-  <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
-  <key>StandardErrorPath</key><string>/tmp/herdr-remote.log</string>
-</dict></plist>
-```
-
-`launchctl load ~/Library/LaunchAgents/dev.akbxr.herdr-remote.plist`
 
 ## Phone: install the app
 
