@@ -56,8 +56,10 @@ private fun App(link: String?, onLinkUsed: () -> Unit) {
     // The herd, refreshed every two seconds while paired.
     var herd by remember { mutableStateOf<Herd?>(null) }
     var problem by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(api) {
+    val onScreen = rememberOnScreen()
+    LaunchedEffect(api, onScreen) {
         val a = api ?: return@LaunchedEffect
+        if (!onScreen) return@LaunchedEffect
         while (true) {
             runCatching { a.herd() }
                 .onSuccess { herd = it; problem = null }

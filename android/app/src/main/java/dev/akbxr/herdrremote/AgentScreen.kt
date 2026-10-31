@@ -65,7 +65,9 @@ fun AgentScreen(api: Api, terminal: String, agent: Agent?, onBack: () -> Unit) {
     val name = agent?.title ?: terminal  // for messages below
 
     // The terminal, refreshed while open; stays at the bottom unless you scrolled up.
-    LaunchedEffect(terminal) {
+    val onScreen = rememberOnScreen()
+    LaunchedEffect(terminal, onScreen) {
+        if (!onScreen) return@LaunchedEffect
         while (true) {
             runCatching { api.read(terminal) }
                 .onSuccess { text ->

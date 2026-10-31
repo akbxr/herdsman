@@ -54,7 +54,9 @@ fun ScreenScreen(api: Api, herd: Herd?) {
     var offset by remember { mutableStateOf(Offset.Zero) }
     val scope = rememberCoroutineScope()
 
-    LaunchedEffect(Unit) {
+    val onScreen = rememberOnScreen()
+    LaunchedEffect(onScreen) {
+        if (!onScreen) return@LaunchedEffect
         while (true) {
             runCatching { api.shot() }
                 .onSuccess { picture = it; takenAt = System.currentTimeMillis(); problem = null }

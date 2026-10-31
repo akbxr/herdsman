@@ -15,9 +15,19 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -29,6 +39,22 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+
+/**
+ * Whether the app is on screen. Polls key on it, so nothing asks the Mac
+ * anything while the phone is in a pocket.
+ */
+@Composable
+fun rememberOnScreen(): Boolean {
+    val owner = LocalLifecycleOwner.current
+    var on by remember { mutableStateOf(owner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) }
+    DisposableEffect(owner) {
+        val observer = LifecycleEventObserver { _, _ -> on = owner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) }
+        owner.lifecycle.addObserver(observer)
+        onDispose { owner.lifecycle.removeObserver(observer) }
+    }
+    return on
+}
 
 /** The main action on a screen: ink on night, so yellow stays for "needs you". */
 @Composable
@@ -71,6 +97,7 @@ fun Field(
     keyboard: KeyboardType = KeyboardType.Text,
     style: TextStyle = Type.body,
     transformation: VisualTransformation? = null,
+    onDone: (() -> Unit)? = null,  // the keyboard's done key
 ) {
     Column(Modifier.fillMaxWidth()) {
         Text(label, style = Type.label, color = Ink.dust)
@@ -82,7 +109,12 @@ fun Field(
             textStyle = style.copy(color = Ink.text),
             cursorBrush = SolidColor(Ink.yellow),
             visualTransformation = transformation ?: if (secret) PasswordVisualTransformation() else VisualTransformation.None,
-            keyboardOptions = KeyboardOptions(keyboardType = keyboard, autoCorrectEnabled = false),
+            keyboardOptions = KeyboardOptions(
+                keyboardType = keyboard,
+                autoCorrectEnabled = false,
+                imeAction = if (onDone != null) ImeAction.Done else ImeAction.Default,
+            ),
+            keyboardActions = KeyboardActions(onDone = { onDone?.invoke() }),
             modifier = Modifier.fillMaxWidth(),
             decorationBox = { inner ->
                 Box(

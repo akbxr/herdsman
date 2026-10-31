@@ -85,6 +85,18 @@ fun ConnectScreen(
         }
     }
 
+    fun pairWithCode() {
+        if (busy != null || code.length != 6 || address.isBlank()) return
+        busy = "Pairing…"
+        problem = null
+        scope.launch {
+            runCatching { confirmPairing(PairFlow.redeem(PairFlow.normalizeAddress(address), code)) }
+                .onSuccess { onPaired(it); onIncomingUsed() }
+                .onFailure { problem = it.advice(); code = "" }  // a used or wrong code won't work again
+            busy = null
+        }
+    }
+
     // A link opened from outside the app (another scanner): pair with it.
     LaunchedEffect(incoming) {
         incoming?.let(::pairWith)
@@ -123,27 +135,26 @@ fun ConnectScreen(
         Field("Address", address, { address = it.trim() }, "100.101.102.103:7710", keyboard = KeyboardType.Uri)
         Spacer(Modifier.height(16.dp))
         Field(
-            "Code", code, { typed -> code = typed.filter(Char::isDigit).take(6) }, "000 000",
+            "Code", code,
+            { typed ->
+                val digits = typed.filter(Char::isDigit).take(6)
+                val completed = digits.length == 6 && code.length < 6
+                code = digits
+                if (completed) pairWithCode()  // the sixth digit pairs: the keyboard hides the button
+            },
+            "000 000",
             keyboard = KeyboardType.NumberPassword,
             style = Type.headline.copy(fontSize = 22.sp, letterSpacing = 2.sp),
             transformation = SixDigits,
+            onDone = ::pairWithCode,
         )
         Spacer(Modifier.height(16.dp))
         QuietButton(
-            "Pair with the code",
+            busy ?: "Pair with the code",
             color = if (busy == null && code.length == 6 && address.isNotBlank()) Ink.text else Ink.dust,
             modifier = Modifier.fillMaxWidth(),
-        ) {
-            if (busy != null || code.length != 6 || address.isBlank()) return@QuietButton
-            busy = "Pairing…"
-            problem = null
-            scope.launch {
-                runCatching { confirmPairing(PairFlow.redeem(PairFlow.normalizeAddress(address), code)) }
-                    .onSuccess { onPaired(it); onIncomingUsed() }
-                    .onFailure { problem = it.advice() }
-                busy = null
-            }
-        }
+            onClick = ::pairWithCode,
+        )
         onKeepCurrent?.let {
             Spacer(Modifier.height(8.dp))
             QuietButton("Keep the Mac I'm paired with", modifier = Modifier.fillMaxWidth(), onClick = it)
