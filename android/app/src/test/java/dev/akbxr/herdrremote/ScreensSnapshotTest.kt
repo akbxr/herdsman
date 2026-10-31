@@ -61,7 +61,7 @@ class ScreensSnapshotTest {
         Frame {
             Column(Modifier.fillMaxSize()) {
                 Box(Modifier.weight(1f)) {
-                    HerdScreen("AKBARs-MacBook-Air.local", herd, problem = null, onOpen = {}, onPairAgain = {}, notifications = { NotificationsCard(on = true, allowed = true, unrestricted = false, onToggle = {}, onOpenSettings = {}, onUnrestrict = {}) })
+                    HerdScreen("AKBARs-MacBook-Air.local", herd, problem = null, onOpen = {}, onPairAgain = {}, notifyOn = true)
                 }
                 BottomBar(listOf("Herd" to true, "Screen" to false), badge = "1", onSelect = {})
             }
@@ -113,6 +113,15 @@ class ScreensSnapshotTest {
                     Attachment(2, uri, "bug-repro.mp4", 38_400_000, "video/mp4", progress = 0.42f),
                     Attachment(3, uri, "crash.log", 9_800, "text/plain", error = "Can't reach your Mac."),
                 ),
+            )
+        }
+    }
+
+    @Test fun notificationsOff() = paparazzi.snapshot {
+        Frame {
+            HerdScreen(
+                "AKBARs-MacBook-Air.local", herd, problem = null, onOpen = {}, onPairAgain = {},
+                notifications = { NotificationsCard(on = false, allowed = true, unrestricted = false, onToggle = {}, onOpenSettings = {}, onUnrestrict = {}) },
             )
         }
     }

@@ -1,4 +1,8 @@
 package dev.akbxr.herdrremote
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.Icon
+import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.Icons
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.activity.result.contract.ActivityResultContracts
@@ -196,6 +200,8 @@ fun HerdScreen(
     onNewTab: () -> Unit = {},
     onActions: (Agent) -> Unit = {},  // long press: split, zoom, rename, close
     notifications: @Composable () -> Unit = {},
+    notifyOn: Boolean = false,
+    onNotifyMenu: () -> Unit = {},  // the bell: turn off, background setting
 ) {
     val agents = herd?.agents.orEmpty().sortedWith(compareBy({ order.indexOf(it.state) }, { it.tabName }))
     val needs = agents.count { it.state == State.NeedsYou }
@@ -215,6 +221,12 @@ fun HerdScreen(
                         style = Type.small, color = Ink.dust, maxLines = 1, overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f),
                     )
+                    if (notifyOn) {
+                        Box(
+                            Modifier.size(40.dp).clip(RoundedCornerShape(10.dp)).clickable(role = Role.Button, onClick = onNotifyMenu),
+                            contentAlignment = Alignment.Center,
+                        ) { Icon(Icons.Filled.Notifications, contentDescription = "Notifications are on", tint = Ink.dust, modifier = Modifier.size(18.dp)) }
+                    }
                     QuietButton("Pair again", onClick = onPairAgain)
                     QuietButton("New tab", color = Ink.text, onClick = onNewTab)
                 }
@@ -284,8 +296,10 @@ private fun AgentRow(agent: Agent, onClick: () -> Unit, onLongClick: () -> Unit)
 @Composable
 fun NotificationsRow(on: Boolean, onChange: (Boolean) -> Unit) {
     val context = LocalContext.current
+    val pairing = remember { Pairing(context) }
     var allowed by remember { mutableStateOf(Watch.canNotify(context)) }
     var unrestricted by remember { mutableStateOf(Watch.unrestricted(context)) }
+    var hintDismissed by remember { mutableStateOf(pairing.backgroundHintDismissed) }
     // Coming back from Android's settings or its dialog: look again.
     val onScreen = rememberOnScreen()
     LaunchedEffect(onScreen) {
@@ -296,8 +310,13 @@ fun NotificationsRow(on: Boolean, onChange: (Boolean) -> Unit) {
         if (granted) onChange(true)
     }
 
+    // Once on and working, the herd stays clean: the bell in the header
+    // turns it off. The card comes back only when something is wrong.
+    val showHint = on && allowed && !unrestricted && !hintDismissed
+    if (on && allowed && !showHint) return
+
     NotificationsCard(
-        on = on, allowed = allowed, unrestricted = unrestricted,
+        on = on, allowed = allowed, unrestricted = unrestricted || hintDismissed,
         onToggle = {
             when {
                 on -> onChange(false)
@@ -312,6 +331,25 @@ fun NotificationsRow(on: Boolean, onChange: (Boolean) -> Unit) {
             )
         },
         onUnrestrict = { Watch.askUnrestricted(context) },
+        onNotNow = { hintDismissed = true; pairing.backgroundHintDismissed = true },
+    )
+}
+
+/** What the bell offers: turning notifications off, and the background setting. */
+@Composable
+fun NotificationsSheet(onTurnOff: () -> Unit, onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    val unrestricted = remember { Watch.unrestricted(context) }
+    ActionSheet(
+        title = "Notifications are on",
+        subtitle = "You'll hear when an agent needs you, finishes or fails, with the app closed.",
+        onDismiss = onDismiss,
+        actions = listOfNotNull(
+            if (!unrestricted) SheetAction("Let it run in the background", "So Android doesn't stop it while the phone sleeps") {
+                onDismiss(); Watch.askUnrestricted(context)
+            } else null,
+            SheetAction("Turn off notifications", danger = true) { onDismiss(); onTurnOff() },
+        ),
     )
 }
 
@@ -320,6 +358,7 @@ fun NotificationsRow(on: Boolean, onChange: (Boolean) -> Unit) {
 fun NotificationsCard(
     on: Boolean, allowed: Boolean, unrestricted: Boolean,
     onToggle: () -> Unit, onOpenSettings: () -> Unit, onUnrestrict: () -> Unit,
+    onNotNow: () -> Unit = {},
 ) {
     Column(
         Modifier
@@ -351,7 +390,10 @@ fun NotificationsCard(
                 "Android may stop it while the phone sleeps. Let it run in the background so notifications keep coming.",
                 style = Type.small, color = Ink.dust,
             )
-            QuietButton("Let it run in the background", color = Ink.text, onClick = onUnrestrict)
+            Row {
+                QuietButton("Let it run in the background", color = Ink.text, onClick = onUnrestrict)
+                QuietButton("Not now", onClick = onNotNow)
+            }
         }
     }
 }

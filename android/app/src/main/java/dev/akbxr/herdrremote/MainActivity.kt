@@ -120,6 +120,13 @@ private fun App(link: String?, onLinkUsed: () -> Unit, openFromNotification: Str
 
         var newTab by remember { mutableStateOf(false) }
         var actionsFor by remember { mutableStateOf<Agent?>(null) }
+        var notifyMenu by remember { mutableStateOf(false) }
+        val setNotify = { on: Boolean ->
+            notify = on
+            pairing.notify = on
+            if (on) Watch.start(context) else Watch.stop(context)
+        }
+        if (notifyMenu) NotificationsSheet(onTurnOff = { setNotify(false) }, onDismiss = { notifyMenu = false })
         val tell = { p: String -> Toast.makeText(context, p, Toast.LENGTH_LONG).show() }
         if (newTab) NewTabSheet(a, scope, onDismiss = { newTab = false }, onProblem = tell)
         actionsFor?.let { PaneActions(a, it, scope, onDismiss = { actionsFor = null }, onProblem = tell) }
@@ -135,16 +142,9 @@ private fun App(link: String?, onLinkUsed: () -> Unit, openFromNotification: Str
                         onPairAgain = { Watch.stop(context); pairing.forget(); notify = false; api = null; herd = null },
                         onNewTab = { newTab = true },
                         onActions = { actionsFor = it },
-                        notifications = {
-                            NotificationsRow(
-                                on = notify,
-                                onChange = { on ->
-                                    notify = on
-                                    pairing.notify = on
-                                    if (on) Watch.start(context) else Watch.stop(context)
-                                },
-                            )
-                        },
+                        notifications = { NotificationsRow(on = notify, onChange = setNotify) },
+                        notifyOn = notify,
+                        onNotifyMenu = { notifyMenu = true },
                     )
                     Section.Screen -> ScreenScreen(api = a, herd = herd)
                 }

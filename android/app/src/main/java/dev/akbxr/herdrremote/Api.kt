@@ -311,6 +311,11 @@ class Pairing(context: Context) {
         get() = prefs.getBoolean("notify", false)
         set(v) = prefs.edit().putBoolean("notify", v).apply()
 
+    /** "Not now" on the run-in-the-background hint: don't show it again. */
+    var backgroundHintDismissed: Boolean
+        get() = prefs.getBoolean("background-hint-dismissed", false)
+        set(v) = prefs.edit().putBoolean("background-hint-dismissed", v).apply()
+
     // forget() clears notify too: nothing to watch without a Mac.
     fun forget() = prefs.edit().clear().apply()
 }
