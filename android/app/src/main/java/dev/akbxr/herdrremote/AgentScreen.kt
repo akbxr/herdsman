@@ -19,6 +19,9 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -92,6 +95,7 @@ data class Attachment(
     val ready get() = path != null
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun AgentScreen(api: Api, terminal: String, agent: Agent?, appScope: CoroutineScope, onBack: () -> Unit) {
     val context = LocalContext.current
@@ -115,6 +119,10 @@ fun AgentScreen(api: Api, terminal: String, agent: Agent?, appScope: CoroutineSc
         else controller.web.evaluateJavascript("hr.close()", null)
     }
     DisposableEffect(controller) { onDispose { controller.close() } }
+    // The keyboard covering the screen (for the terminal's own keys or the
+    // message box): the terminal keeps its rows and scrolls instead.
+    val keyboardUp = WindowInsets.isImeVisible
+    LaunchedEffect(controller, keyboardUp) { controller.keyboard(keyboardUp) }
 
     // Picked files go up right away, so Send only has paths to pass on.
     fun add(uris: List<Uri>) {

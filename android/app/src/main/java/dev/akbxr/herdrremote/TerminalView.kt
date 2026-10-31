@@ -104,6 +104,19 @@ class TerminalController(context: Context, private val onStatus: (TermStatus) ->
         js("hr.input(${JSONObject.quote(out)})")
     }
 
+    /**
+     * Whether the phone's keyboard covers part of the screen. While it does,
+     * the terminal keeps its rows and only scrolls: shrinking it would make
+     * the program reflow twice per keystroke session, and herdr-core grows a
+     * terminal by adding blank rows at the bottom.
+     */
+    private var keyboardUp = false
+    fun keyboard(up: Boolean) {
+        if (up == keyboardUp) return
+        keyboardUp = up
+        js("hr.keyboard($up)")
+    }
+
     fun key(name: String) = js("hr.key(${JSONObject.quote(name)})")
     fun paste(text: String) = js("hr.paste(${JSONObject.quote(text)})")
 

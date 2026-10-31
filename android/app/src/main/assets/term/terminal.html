@@ -54,8 +54,9 @@
 
   // The cell size at BASE, measured once while the font really is BASE
   // (scaling a small font's cells up is off: xterm rounds to pixels).
-  let base = null;
+  let base = null, fontsReady = false;
   function measureBase() {
+    if (!fontsReady) return;   // the fallback font's cells are a different size
     const screen = term.element.querySelector(".xterm-screen");
     const r = screen.getBoundingClientRect();
     if (term.options.fontSize === BASE && r.width) base = { w: r.width / term.cols, h: r.height / term.rows };
@@ -78,26 +79,52 @@
   }
 
   // What fits this screen at the readable font; sent so that typing here
-  // gives the terminal the phone's size.
+  // gives the terminal the phone's size. Sent once the layout settles: the
+  // keyboard slides in over ~250 ms, and each step would reflow the program.
+  let resizeTimer = null;
+  let sent = { cols: 0, rows: 0 };   // the size the server has for this phone
+  let keyboardUp = false;            // told by the app (hr.keyboard)
+  function sendSize() {
+    clearTimeout(resizeTimer);
+    resizeTimer = null;
+    if (phone.cols === sent.cols && phone.rows === sent.rows) return;
+    if (ws && ws.readyState === 1) {
+      ws.send(JSON.stringify({ type: "resize", cols: phone.cols, rows: phone.rows }));
+      sent = { cols: phone.cols, rows: phone.rows };
+    }
+  }
   function measurePhone() {
     const v = view(), c = cellAt(BASE);
     if (!c.w) return;
     const next = { cols: Math.max(20, Math.floor(v.w / c.w)), rows: Math.max(5, Math.floor(v.h / c.h)) };
+    // With the keyboard up the rows stay: the terminal scrolls under it
+    // (herdr-core grows a terminal by adding blank rows at the bottom, so a
+    // shrink and grow per keyboard would leave a gap until the program redraws).
+    if (keyboardUp && sent.rows) next.rows = sent.rows;
     if (next.cols === phone.cols && next.rows === phone.rows) return;
     phone = next;
-    if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "resize", cols: phone.cols, rows: phone.rows }));
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(sendSize, 300);
   }
 
   function send(text) {
     if (ws && ws.readyState === 1 && text) ws.send(enc.encode(text));
   }
-  term.onData(send);   // xterm's replies to the program's queries (colors, device attributes)
+  // What xterm itself sends: mouse reports go to the program like keys;
+  // everything else answers the display attach's own queries (colors, device
+  // attributes), so it goes back to that attach, not to the program.
+  const MOUSE = /^\x1b\[(<\d+;\d+;\d+[Mm]|M[\s\S]{3})/;
+  term.onData((d) => {
+    if (MOUSE.test(d)) send(d);
+    else if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "reply", data: d }));
+  });
 
   function connect() {
     if (!url || ended) return;
     measurePhone();
     status("connecting");
     const u = url + "&cols=" + phone.cols + "&rows=" + phone.rows;
+    sent = { cols: phone.cols, rows: phone.rows };
     ws = new WebSocket(u);
     ws.binaryType = "arraybuffer";
     ws.onopen = () => { retry = 0; term.reset(); status("live"); };
@@ -106,6 +133,9 @@
       const m = JSON.parse(e.data);
       if (m.type === "size") {
         real = { cols: m.cols, rows: m.rows };
+        // A fresh full paint follows at the new size: start from a clean
+        // terminal so the copy matches the Mac's exactly (scrollback included).
+        if (m.repaint) term.reset();
         term.resize(m.cols, m.rows);
         fit();
         follow();
@@ -151,7 +181,8 @@
     requestAnimationFrame(() => {
       followQueued = false;
       window.scrollTo(0, 0);
-      const h = cellAt(term.options.fontSize).h;
+      // The row height as drawn right now.
+      const h = term.element.querySelector(".xterm-screen").getBoundingClientRect().height / term.rows;
       if (!h) return;
       if (wrap.scrollHeight <= wrap.clientHeight + 1) { wrap.scrollTop = 0; return; }
       const top = 6 + term.buffer.active.cursorY * h;
@@ -167,11 +198,28 @@
   window.hr = {
     connect(wsUrl) {
       url = wsUrl; ended = false;
-      document.fonts.ready.then(() => {
-        // Measure with the real font loaded, then go.
-        if (!base) { term.options.fontSize = BASE; requestAnimationFrame(() => requestAnimationFrame(() => { measureBase(); connect(); })); }
-        else connect();
+      // Load the terminal's fonts first (document.fonts.ready doesn't wait for
+      // a font nothing has asked for yet), make xterm measure its cells again
+      // with them, then size for this phone and go.
+      Promise.all(["13px JBM", "bold 13px JBM", "13px NerdSymbols"].map((f) => document.fonts.load(f).catch(() => {}))).then(() => {
+        if (!base) {
+          fontsReady = true;
+          term.options.fontSize = BASE + 1;   // a change makes xterm re-measure
+          term.options.fontSize = BASE;
+          requestAnimationFrame(() => requestAnimationFrame(() => { measureBase(); phone = { cols: 0, rows: 0 }; measurePhone(); fit(); connect(); }));
+        } else connect();
       });
+    },
+    keyboard(up) {
+      keyboardUp = up;
+      if (up) {
+        // A shrink measured while the keyboard slid in hasn't gone out yet: undo it.
+        if (sent.rows) phone = { cols: phone.cols, rows: sent.rows };
+        if (phone.cols === sent.cols && phone.rows === sent.rows) { clearTimeout(resizeTimer); resizeTimer = null; }
+      } else {
+        measurePhone();
+      }
+      follow();
     },
     input(text) { term.scrollToBottom(); send(text); },
     key(name) { const k = KEYS[name]; if (k) { term.scrollToBottom(); send(k()); } },
