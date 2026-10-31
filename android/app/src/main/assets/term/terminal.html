@@ -14,8 +14,11 @@
   html, body { margin: 0; position: fixed; inset: 0; background: #24283b; overflow: hidden; }
   /* The terminal keeps the real terminal's size; when that is wider or
      taller than the phone even at the smallest font, this pans. */
+  /* touch-action none: every drag is handled below (screen and scrollback
+     as one, with momentum), none by the browser. */
   #wrap { position: absolute; inset: 0; overflow: auto; padding: 6px 6px 0 6px; box-sizing: border-box;
-          -webkit-tap-highlight-color: transparent; }
+          -webkit-tap-highlight-color: transparent; touch-action: none; scrollbar-width: none; }
+  #wrap::-webkit-scrollbar { display: none; }
   .xterm .xterm-viewport { background: #24283b !important; overflow-y: hidden; }
   /* The phone's own keyboard comes from the app, never from xterm's textarea. */
   .xterm-helper-textarea { pointer-events: none; }
@@ -24,6 +27,7 @@
 <body>
 <div id="wrap"><div id="term"></div></div>
 <script src="xterm.js"></script>
+<script src="addon-webgl.js"></script>
 <script>
 (() => {
   const BASE = 13, MIN = 5.5;            // font px: readable, and the smallest when fitting
@@ -42,6 +46,13 @@
     },
   });
   term.open(document.getElementById("term"));
+  // Drawn on the GPU: the DOM renderer redraws every row as text on each
+  // scroll, which a phone can't keep up with. Back to it if WebGL is lost.
+  try {
+    const gl = new WebglAddon.WebglAddon();
+    gl.onContextLoss(() => gl.dispose());
+    term.loadAddon(gl);
+  } catch (e) { /* no WebGL here: the DOM renderer stays */ }
   term.textarea.setAttribute("inputmode", "none");   // no soft keyboard from the web side
   term.textarea.setAttribute("tabindex", "-1");
 
@@ -163,14 +174,88 @@
     shifttab: () => "\x1b[Z",
   };
 
-  // Taps open the phone's keyboard (in the app); drags pan.
-  let start = null;
-  wrap.addEventListener("touchstart", (e) => { const t = e.touches[0]; start = { x: t.clientX, y: t.clientY }; }, { passive: true });
+  // Touch: a tap opens the phone's keyboard (in the app); a drag scrolls.
+  // The screen (#wrap, when the terminal is taller or wider than the phone)
+  // and the scrollback (xterm's lines) move as one, and a flick keeps going
+  // and slows down like any Android list. (xterm's own touch handling jumps
+  // line by line and stops dead when the finger lifts: it is kept out.)
+  const rowH = () => term.element.querySelector(".xterm-screen").getBoundingClientRect().height / term.rows || BASE;
+  let touch = null, flingFrame = 0, lineRest = 0, lastUserScroll = 0;
+
+  // Scrolls by pixels; dy > 0 goes towards newer lines. Says whether anything moved.
+  function scrollBy(dx, dy) {
+    let moved = false;
+    if (dx) { const l = wrap.scrollLeft; wrap.scrollLeft += dx; moved = wrap.scrollLeft !== l; }
+    if (dy) {
+      const buf = term.buffer.active;
+      const inScrollback = buf.viewportY < buf.baseY;
+      if ((dy > 0 && inScrollback) || (dy < 0 && wrap.scrollTop <= 0)) {
+        if (dy < 0 && buf.viewportY <= 0) {
+          lineRest = 0;                     // the oldest line: nothing further up
+        } else {
+          lineRest += dy;                   // whole lines; the rest waits for the next move
+          const n = Math.trunc(lineRest / rowH());
+          if (n) { lineRest -= n * rowH(); term.scrollLines(n); }
+          moved = true;
+        }
+      } else {
+        const t = wrap.scrollTop; wrap.scrollTop += dy; moved = moved || wrap.scrollTop !== t;
+      }
+    }
+    if (moved) lastUserScroll = performance.now();
+    return moved;
+  }
+
+  function stopFling() { cancelAnimationFrame(flingFrame); flingFrame = 0; }
+
+  // Keeps going at the speed the finger left with, slowing down evenly.
+  function startFling(vx, vy) {   // px per ms
+    let last = performance.now();
+    const step = (now) => {
+      const dt = Math.min(48, now - last);
+      last = now;
+      const decay = Math.pow(0.996, dt);  // about 0.94 per 60 Hz frame
+      vx *= decay; vy *= decay;
+      if (Math.abs(vx) < 0.02 && Math.abs(vy) < 0.02) { flingFrame = 0; return; }
+      if (!scrollBy(vx * dt, vy * dt)) { flingFrame = 0; return; }  // reached an end
+      flingFrame = requestAnimationFrame(step);
+    };
+    flingFrame = requestAnimationFrame(step);
+  }
+
+  const opts = { capture: true, passive: false };
+  wrap.addEventListener("touchstart", (e) => {
+    e.stopPropagation();   // not to xterm
+    stopFling();           // a touch catches a flick, like any list
+    if (e.touches.length !== 1) { touch = null; return; }
+    const t = e.touches[0];
+    touch = { x0: t.clientX, y0: t.clientY, x: t.clientX, y: t.clientY, moved: false, samples: [{ t: e.timeStamp, x: t.clientX, y: t.clientY }] };
+  }, opts);
+  wrap.addEventListener("touchmove", (e) => {
+    e.stopPropagation();
+    if (!touch || e.touches.length !== 1) return;
+    e.preventDefault();
+    const t = e.touches[0];
+    if (!touch.moved && Math.hypot(t.clientX - touch.x0, t.clientY - touch.y0) < 8) return;
+    touch.moved = true;
+    scrollBy(touch.x - t.clientX, touch.y - t.clientY);
+    touch.x = t.clientX; touch.y = t.clientY;
+    touch.samples.push({ t: e.timeStamp, x: t.clientX, y: t.clientY });
+    while (touch.samples.length > 2 && e.timeStamp - touch.samples[0].t > 100) touch.samples.shift();
+  }, opts);
   wrap.addEventListener("touchend", (e) => {
-    const t = e.changedTouches[0];
-    if (start && Math.hypot(t.clientX - start.x, t.clientY - start.y) < 10) android.onTap();
-    start = null;
-  }, { passive: true });
+    e.stopPropagation();
+    if (!touch) return;
+    const t = touch;
+    touch = null;
+    if (!t.moved) { android.onTap(); return; }
+    // The speed over the last ~100 ms, unless the finger stopped before lifting.
+    const a = t.samples[0], b = t.samples[t.samples.length - 1], dt = b.t - a.t;
+    if (dt <= 0 || e.timeStamp - b.t > 80) return;
+    const vx = (a.x - b.x) / dt, vy = (a.y - b.y) / dt;
+    if (Math.hypot(vx, vy) > 0.25) startFling(vx, vy);
+  }, opts);
+  wrap.addEventListener("touchcancel", (e) => { e.stopPropagation(); touch = null; }, opts);
 
   // Keeps the cursor's row on screen inside #wrap (the terminal can be taller
   // than the space the keyboard leaves), and the top when it all fits.
@@ -181,6 +266,10 @@
     requestAnimationFrame(() => {
       followQueued = false;
       window.scrollTo(0, 0);
+      // Not while you scroll or read back: output (a spinner) would yank the
+      // view away from under your finger. Typing brings it back.
+      if (touch || flingFrame || performance.now() - lastUserScroll < 4000) return;
+      if (term.buffer.active.viewportY < term.buffer.active.baseY) return;
       // The row height as drawn right now.
       const h = term.element.querySelector(".xterm-screen").getBoundingClientRect().height / term.rows;
       if (!h) return;
@@ -221,8 +310,14 @@
       }
       follow();
     },
-    input(text) { term.scrollToBottom(); send(text); },
-    key(name) { const k = KEYS[name]; if (k) { term.scrollToBottom(); send(k()); } },
+    input(text) { lastUserScroll = 0; stopFling(); term.scrollToBottom(); send(text); follow(); },
+    // The rows on screen, for tests in a desktop browser.
+    screen() {
+      const b = term.buffer.active, out = [];
+      for (let i = 0; i < term.rows; i++) { const l = b.getLine(b.viewportY + i); out.push(l ? l.translateToString(true) : ""); }
+      return { rows: out, viewportY: b.viewportY, baseY: b.baseY, wrapTop: wrap.scrollTop, renderer: term.element.querySelector(".xterm-screen canvas") ? "webgl" : "dom" };
+    },
+    key(name) { const k = KEYS[name]; if (k) { lastUserScroll = 0; stopFling(); term.scrollToBottom(); send(k()); follow(); } },
     paste(text) { term.paste(text); },
     close() { ended = true; if (ws) ws.close(); },
   };
