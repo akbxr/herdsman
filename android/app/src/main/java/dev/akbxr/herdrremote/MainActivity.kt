@@ -28,24 +28,38 @@ import kotlinx.coroutines.delay
 class MainActivity : ComponentActivity() {
     // A herdr-remote://pair link this activity was opened with, until used.
     private var link by mutableStateOf<String?>(null)
+    // A terminal a notification asked to open, until opened.
+    private var openFromNotification by mutableStateOf<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        if (savedInstanceState == null) link = intent?.dataString
-        setContent { HerdrTheme { App(link, onLinkUsed = { link = null }) } }
+        if (savedInstanceState == null) {
+            link = intent?.dataString
+            openFromNotification = intent?.getStringExtra(Watch.EXTRA_TERMINAL)
+        }
+        Watch.start(this)  // if notifications are on and it isn't running (e.g. after an update)
+        setContent {
+            HerdrTheme {
+                App(link, onLinkUsed = { link = null }, openFromNotification, onOpened = { openFromNotification = null })
+            }
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         intent.dataString?.let { link = it }
+        intent.getStringExtra(Watch.EXTRA_TERMINAL)?.let { openFromNotification = it }
     }
+
+    override fun onStart() { super.onStart(); Watch.appVisible = true }
+    override fun onStop() { Watch.appVisible = false; super.onStop() }
 }
 
 private enum class Section { Herd, Screen }
 
 @Composable
-private fun App(link: String?, onLinkUsed: () -> Unit) {
+private fun App(link: String?, onLinkUsed: () -> Unit, openFromNotification: String?, onOpened: () -> Unit) {
     val context = LocalContext.current
     val pairing = remember { Pairing(context) }
     var api by remember {
@@ -55,6 +69,10 @@ private fun App(link: String?, onLinkUsed: () -> Unit) {
     var section by rememberSaveable { mutableStateOf(Section.Herd) }
     val scope = rememberCoroutineScope()  // outlives sheets and screens: commands to the Mac finish
     var openTerminal by rememberSaveable { mutableStateOf<String?>(null) }
+    LaunchedEffect(openFromNotification) {
+        openFromNotification?.let { openTerminal = it; section = Section.Herd; onOpened() }
+    }
+    var notify by remember { mutableStateOf(pairing.notify) }
 
     // The herd, refreshed every two seconds while paired.
     var herd by remember { mutableStateOf<Herd?>(null) }
@@ -80,7 +98,9 @@ private fun App(link: String?, onLinkUsed: () -> Unit) {
                 incoming = link,
                 onIncomingUsed = onLinkUsed,
                 onPaired = { info ->
+                    val keepNotify = pairing.notify
                     pairing.address = info.address; pairing.token = info.token; pairing.host = info.host
+                    if (keepNotify) { Watch.stop(context); pairing.notify = true; Watch.start(context) }
                     host = info.host
                     herd = null
                     openTerminal = null
@@ -112,9 +132,19 @@ private fun App(link: String?, onLinkUsed: () -> Unit) {
                         herd = herd,
                         problem = problem,
                         onOpen = { openTerminal = it.terminal },
-                        onPairAgain = { pairing.forget(); api = null; herd = null },
+                        onPairAgain = { Watch.stop(context); pairing.forget(); notify = false; api = null; herd = null },
                         onNewTab = { newTab = true },
                         onActions = { actionsFor = it },
+                        notifications = {
+                            NotificationsRow(
+                                on = notify,
+                                onChange = { on ->
+                                    notify = on
+                                    pairing.notify = on
+                                    if (on) Watch.start(context) else Watch.stop(context)
+                                },
+                            )
+                        },
                     )
                     Section.Screen -> ScreenScreen(api = a, herd = herd)
                 }

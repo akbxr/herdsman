@@ -116,6 +116,24 @@ The phone needs Tailscale on too, signed in to the same account.
   back.
 - **Screen**: a picture of the Herdr window every 3 s (pinch to zoom,
   double-tap to reset), the Mac's tabs to switch between, and **Next layout**.
+- **Notifications** (turn them on at the bottom of the herd): when an agent
+  needs you, finishes or stops with an error, in its own words ("Allow
+  `rm -rf build`?", the first line of its answer). Tap one to open that
+  terminal. Nothing is posted while the app is on screen.
+
+  There is no push service: a foreground service on the phone waits on the
+  Mac's `/api/events` over Tailscale, with a quiet "Watching your Mac"
+  notification. For it to keep running while the phone sleeps:
+  - tap **Let it run in the background** in the app (Android's battery
+    exemption);
+  - on Xiaomi, POCO and Redmi phones also: Settings → Apps → Herdr Remote →
+    **Autostart** on, and **Battery saver** → **No restrictions**, or
+    HyperOS stops it anyway;
+  - Tailscale has to stay on on the phone.
+
+  It starts again after the phone restarts. Statuses come from the programs
+  themselves (OSC 7501: tego, Claude Code, Codex, Pi, Crush send them); a
+  plain shell has none, so it never notifies.
 
 ## API
 
@@ -132,7 +150,9 @@ All under `/api`, with `Authorization: Bearer <token>` (except `/pair`):
 | POST | `/send` | `{terminal, text, force?}` → `hc send` |
 | POST | `/keys` | `{terminal, keys: [...]}` → `hc keys` |
 | POST | `/interrupt` | `{terminal}` → `hc interrupt` |
-| GET | `/attach?terminal=t12&cols=&rows=&token=` | WebSocket: `hc attach` in a PTY; binary frames are terminal bytes both ways, text frames `{"type":"size"}` (server) and `{"type":"resize"}` (phone) |
+| GET | `/attach?terminal=t12&cols=&rows=&token=` | WebSocket: `hc attach` in a PTY; binary frames are terminal bytes both ways, text frames `{"type":"size"}` (server) and `{"type":"resize"}`, `{"type":"reply"}` (phone) |
+| POST | `/upload?terminal=t12&name=x.png` | body = the file; `hc put` places it beside the terminal → `{path, bytes}` |
+| GET | `/events?after=41&wait=25` | long poll for agents' status changes → `{seq, events}`; without `after`: `{seq, current}` |
 
 The terminal page (`android/app/src/main/assets/term/terminal.html`) also
 opens in a desktop browser for debugging: `terminal.html#ws=<attach URL>`.

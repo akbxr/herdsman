@@ -48,6 +48,29 @@ data class Herd(val layout: String, val agents: List<Agent>, val tabs: List<Tab>
 
 class ApiError(message: String) : IOException(message)
 
+/** A program's status change, in its own words (OSC 7501 via herdr-core). */
+data class AgentEvent(
+    val terminal: String,
+    val state: String,   // idle, working, blocked, done, error; "" cleared; ended
+    val kind: String,    // permission, question, auth (blocked only)
+    val msg: String,
+    val app: String,
+    val where: String,   // Herdr's label: "~ / 1"
+) {
+    companion object {
+        fun from(o: JSONObject) = AgentEvent(
+            terminal = o.optString("terminal"),
+            state = o.optString("state"),
+            kind = o.optString("kind"),
+            msg = o.optString("msg"),
+            app = o.optString("app"),
+            where = o.optString("where"),
+        )
+    }
+}
+
+data class AgentEvents(val seq: Long, val events: List<AgentEvent>, val reset: Boolean, val current: List<AgentEvent>?)
+
 class Api(val base: String, val token: String) {
 
     private fun open(path: String, method: String, timeoutMs: Int): HttpURLConnection {
@@ -139,6 +162,26 @@ class Api(val base: String, val token: String) {
         val body = JSONObject().put("command", name)
         if (args != null) body.put("args", args)
         call("/api/do", body, timeoutMs = 20_000)
+    }
+
+    /**
+     * Agents' status changes after [after] (null: just the cursor and what
+     * each terminal reports now). Waits up to [waitS] seconds for one.
+     */
+    suspend fun events(after: Long?, waitS: Int = 25): AgentEvents = withContext(Dispatchers.IO) {
+        val q = if (after == null) "" else "?after=$after&wait=$waitS"
+        val c = open("/api/events$q", "GET", (waitS + 15) * 1000)
+        try {
+            val ok = c.responseCode < 400
+            val text = (if (ok) c.inputStream else c.errorStream)?.bufferedReader()?.use { it.readText() } ?: ""
+            val json = runCatching { JSONObject(text) }.getOrElse { JSONObject() }
+            if (c.responseCode == 401) throw ApiError("The Mac no longer knows this phone. Pair again.")
+            if (!ok) throw ApiError(json.optString("error", "The Mac answered ${c.responseCode}."))
+            fun list(key: String) = json.optJSONArray(key)?.let { a -> (0 until a.length()).map { AgentEvent.from(a.getJSONObject(it)) } }
+            AgentEvents(json.optLong("seq"), list("events").orEmpty(), json.optBoolean("reset"), list("current"))
+        } finally {
+            c.disconnect()
+        }
     }
 
     // Herdr's own commands, as the Mac's keys and menus do them.
@@ -263,6 +306,12 @@ class Pairing(context: Context) {
         get() = prefs.getString("host", "") ?: ""
         set(v) = prefs.edit().putString("host", v).apply()
 
+    /** Notifications from the background watcher (Watch.kt). */
+    var notify: Boolean
+        get() = prefs.getBoolean("notify", false)
+        set(v) = prefs.edit().putBoolean("notify", v).apply()
+
+    // forget() clears notify too: nothing to watch without a Mac.
     fun forget() = prefs.edit().clear().apply()
 }
 

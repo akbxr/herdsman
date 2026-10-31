@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The ear tag as a status bar icon: one color, the hole and the stamped
+     bars cut out (evenOdd), so it reads at 24dp. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M9.5,4.5 a2.5,2.5 0 0 1 5,0 v3 h3.5 a2.5,2.5 0 0 1 2.5,2.5 v8 a2.5,2.5 0 0 1 -2.5,2.5 h-12 a2.5,2.5 0 0 1 -2.5,-2.5 v-8 a2.5,2.5 0 0 1 2.5,-2.5 h3.5 z M12,4 m-1.1,0 a1.1,1.1 0 1 0 2.2,0 a1.1,1.1 0 1 0 -2.2,0 z M7,12 h10 v1.8 h-10 z M7,15.6 h6.5 v1.8 h-6.5 z" />
+</vector>

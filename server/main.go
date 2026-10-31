@@ -39,8 +39,9 @@ var (
 type server struct {
 	token     []byte
 	tokenFile string
-	herdr     string // herdr-app binary
-	hc        string // hc binary
+	events    *eventHub // agents' status changes, for the phone's notifications
+	herdr     string    // herdr-app binary
+	hc        string    // hc binary
 	shotDir   string
 }
 
@@ -143,8 +144,12 @@ func main() {
 	mux.HandleFunc("POST /api/send", s.auth(s.send))
 	mux.HandleFunc("POST /api/keys", s.auth(s.keys))
 	mux.HandleFunc("POST /api/interrupt", s.auth(s.interrupt))
-	mux.HandleFunc("GET /api/attach", s.authQuery(s.attach)) // WebSocket: a live terminal
-	mux.HandleFunc("POST /api/upload", s.auth(s.upload))     // an attachment, placed beside a terminal
+	mux.HandleFunc("GET /api/attach", s.authQuery(s.attach))   // WebSocket: a live terminal
+	mux.HandleFunc("POST /api/upload", s.auth(s.upload))       // an attachment, placed beside a terminal
+	mux.HandleFunc("GET /api/events", s.auth(s.eventsHandler)) // long poll: agents' status changes
+
+	s.events = newEventHub(s.hc)
+	go s.events.run(context.Background())
 
 	srv := &http.Server{Addr: listen, Handler: logRequests(mux), ReadHeaderTimeout: 10 * time.Second}
 	ln, err := net.Listen("tcp", listen)
@@ -268,11 +273,28 @@ func (s *server) authQuery(h http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// statusWriter remembers the status code a handler sent.
+type statusWriter struct {
+	http.ResponseWriter
+	code int
+}
+
+func (w *statusWriter) WriteHeader(code int) { w.code = code; w.ResponseWriter.WriteHeader(code) }
+
+// Unwrap lets the WebSocket upgrade reach the real connection.
+func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
 func logRequests(h http.Handler) http.Handler {
+	// The phone polls these all the time; log them only when they fail.
+	quiet := map[string]bool{"/api/state": true, "/api/events": true, "/api/read": true, "/api/shot": true}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		h.ServeHTTP(w, r)
-		log.Printf("%s %s %s (%s)", r.RemoteAddr, r.Method, r.URL.Path, time.Since(start).Round(time.Millisecond))
+		sw := &statusWriter{ResponseWriter: w, code: http.StatusOK}
+		h.ServeHTTP(sw, r)
+		if quiet[r.URL.Path] && sw.code < 400 {
+			return
+		}
+		log.Printf("%s %s %s %d (%s)", r.RemoteAddr, r.Method, r.URL.Path, sw.code, time.Since(start).Round(time.Millisecond))
 	})
 }
 

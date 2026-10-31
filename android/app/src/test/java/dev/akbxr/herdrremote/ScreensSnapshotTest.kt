@@ -61,7 +61,7 @@ class ScreensSnapshotTest {
         Frame {
             Column(Modifier.fillMaxSize()) {
                 Box(Modifier.weight(1f)) {
-                    HerdScreen("AKBARs-MacBook-Air.local", herd, problem = null, onOpen = {}, onPairAgain = {})
+                    HerdScreen("AKBARs-MacBook-Air.local", herd, problem = null, onOpen = {}, onPairAgain = {}, notifications = { NotificationsCard(on = true, allowed = true, unrestricted = false, onToggle = {}, onOpenSettings = {}, onUnrestrict = {}) })
                 }
                 BottomBar(listOf("Herd" to true, "Screen" to false), badge = "1", onSelect = {})
             }

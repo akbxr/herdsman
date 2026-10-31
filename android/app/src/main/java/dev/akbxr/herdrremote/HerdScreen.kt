@@ -1,4 +1,12 @@
 package dev.akbxr.herdrremote
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.compose.rememberLauncherForActivityResult
+import android.provider.Settings
+import android.os.Build
+import android.content.Intent
+import android.Manifest
 
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -187,6 +195,7 @@ fun HerdScreen(
     onPairAgain: () -> Unit,
     onNewTab: () -> Unit = {},
     onActions: (Agent) -> Unit = {},  // long press: split, zoom, rename, close
+    notifications: @Composable () -> Unit = {},
 ) {
     val agents = herd?.agents.orEmpty().sortedWith(compareBy({ order.indexOf(it.state) }, { it.tabName }))
     val needs = agents.count { it.state == State.NeedsYou }
@@ -235,6 +244,7 @@ fun HerdScreen(
                 modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp),
             )
         }
+        item { notifications() }
     }
 }
 
@@ -263,6 +273,85 @@ private fun AgentRow(agent: Agent, onClick: () -> Unit, onLongClick: () -> Unit)
                 },
                 style = Type.small, maxLines = 1, overflow = TextOverflow.Ellipsis,
             )
+        }
+    }
+}
+
+/**
+ * Notifications while the app is closed: on or off, and what Android needs
+ * for them (the permission on 13+, running in the background).
+ */
+@Composable
+fun NotificationsRow(on: Boolean, onChange: (Boolean) -> Unit) {
+    val context = LocalContext.current
+    var allowed by remember { mutableStateOf(Watch.canNotify(context)) }
+    var unrestricted by remember { mutableStateOf(Watch.unrestricted(context)) }
+    // Coming back from Android's settings or its dialog: look again.
+    val onScreen = rememberOnScreen()
+    LaunchedEffect(onScreen) {
+        if (onScreen) { allowed = Watch.canNotify(context); unrestricted = Watch.unrestricted(context) }
+    }
+    val askPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        allowed = granted
+        if (granted) onChange(true)
+    }
+
+    NotificationsCard(
+        on = on, allowed = allowed, unrestricted = unrestricted,
+        onToggle = {
+            when {
+                on -> onChange(false)
+                !allowed && Build.VERSION.SDK_INT >= 33 -> askPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                else -> onChange(true)
+            }
+        },
+        onOpenSettings = {
+            context.startActivity(
+                Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+        },
+        onUnrestrict = { Watch.askUnrestricted(context) },
+    )
+}
+
+/** The notifications setting as shown, without Android (also for snapshots). */
+@Composable
+fun NotificationsCard(
+    on: Boolean, allowed: Boolean, unrestricted: Boolean,
+    onToggle: () -> Unit, onOpenSettings: () -> Unit, onUnrestrict: () -> Unit,
+) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(Ink.pen)
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Notifications", style = Type.label, color = Ink.text)
+                Text(
+                    if (on) "On: you'll hear when an agent needs you, finishes or fails."
+                    else "Hear when an agent needs you, finishes or fails, with the app closed.",
+                    style = Type.small, color = Ink.dust,
+                )
+            }
+            Spacer(Modifier.width(12.dp))
+            QuietButton(if (on) "Turn off" else "Turn on", color = Ink.text, onClick = onToggle)
+        }
+        if (on && !allowed) {
+            Spacer(Modifier.height(10.dp))
+            Text("Notifications are blocked for Herdr Remote in Android's settings.", style = Type.small, color = Ink.yellow)
+            QuietButton("Open settings", color = Ink.text, onClick = onOpenSettings)
+        } else if (on && !unrestricted) {
+            Spacer(Modifier.height(10.dp))
+            Text(
+                "Android may stop it while the phone sleeps. Let it run in the background so notifications keep coming.",
+                style = Type.small, color = Ink.dust,
+            )
+            QuietButton("Let it run in the background", color = Ink.text, onClick = onUnrestrict)
         }
     }
 }
