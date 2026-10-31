@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- An ear tag: domed neck with a punched hole over a rounded body. 108dp
+     canvas, drawn inside the 66dp safe zone. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- neck + body as one shape, the hole cut out (evenOdd) -->
+    <path
+        android:fillColor="#E0AF68"
+        android:fillType="evenOdd"
+        android:pathData="M45,30 a9,9 0 0 1 18,0 v10 h11 a8,8 0 0 1 8,8 v24 a8,8 0 0 1 -8,8 h-40 a8,8 0 0 1 -8,-8 v-24 a8,8 0 0 1 8,-8 h11 z M54,27 m-3.5,0 a3.5,3.5 0 1 0 7,0 a3.5,3.5 0 1 0 -7,0 z" />
+    <!-- stamped number bars -->
+    <path
+        android:fillColor="#1F2335"
+        android:pathData="M37,54 h34 v5 h-34 z M37,64 h22 v5 h-22 z" />
+</vector>
