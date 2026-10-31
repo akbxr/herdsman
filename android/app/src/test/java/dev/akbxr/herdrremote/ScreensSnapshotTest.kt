@@ -85,23 +85,35 @@ class ScreensSnapshotTest {
         Text(terminal, style = Type.terminal, color = Ink.text, softWrap = false, modifier = Modifier.padding(8.dp))
     }
 
+    @Composable
+    private fun AgentView(status: TermStatus, ctrl: Boolean, message: String = "", attachments: List<Attachment> = emptyList()) {
+        AgentContent(
+            terminal = "t12", agent = herd.agents[0], status = status, ctrl = ctrl, problem = null,
+            message = message, onMessage = {}, attachments = attachments, sending = false, refused = false,
+            onBack = {}, onMore = {}, onAttach = {}, onRemove = {}, onSend = {}, onKey = {},
+        ) { FakeTerminal() }
+    }
+
     @Test fun agentWatching() = paparazzi.snapshot {
-        Frame {
-            AgentContent(
-                terminal = "t12", agent = herd.agents[0], problem = null, ctrl = false,
-                status = TermStatus(state = "live", cols = 165, rows = 36, phoneCols = 52, phoneRows = 40),
-                onBack = {}, onShowOnMac = {}, onKey = {},
-            ) { FakeTerminal() }
-        }
+        Frame { AgentView(TermStatus(state = "live", cols = 165, rows = 36, phoneCols = 52, phoneRows = 40), ctrl = false) }
     }
 
     @Test fun agentDriving() = paparazzi.snapshot {
+        Frame { AgentView(TermStatus(state = "reconnecting", cols = 52, rows = 40, phoneCols = 52, phoneRows = 40, driving = true), ctrl = true) }
+    }
+
+    @Test fun agentAttachments() = paparazzi.snapshot {
+        val uri = android.net.Uri.parse("content://x/1")
         Frame {
-            AgentContent(
-                terminal = "t12", agent = herd.agents[0], problem = null, ctrl = true,
-                status = TermStatus(state = "reconnecting", cols = 52, rows = 40, phoneCols = 52, phoneRows = 40, driving = true),
-                onBack = {}, onShowOnMac = {}, onKey = {},
-            ) { FakeTerminal() }
+            AgentView(
+                TermStatus(state = "live", cols = 52, rows = 40, phoneCols = 52, phoneRows = 40, driving = true), ctrl = false,
+                message = "what's wrong in this screenshot?",
+                attachments = listOf(
+                    Attachment(1, uri, "Screenshot_2026-10-31.png", 412_000, "image/png", path = "/x/Screenshot_2026-10-31.png", progress = 1f),
+                    Attachment(2, uri, "bug-repro.mp4", 38_400_000, "video/mp4", progress = 0.42f),
+                    Attachment(3, uri, "crash.log", 9_800, "text/plain", error = "Can't reach your Mac."),
+                ),
+            )
         }
     }
 }

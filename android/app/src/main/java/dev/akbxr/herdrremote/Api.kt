@@ -35,6 +35,7 @@ data class Agent(
     val tabName: String,
     val tabActive: Boolean,
     val spaceName: String,
+    val pane: String = "", // its pane in Herdr's layout
 ) {
     val title get() = label ?: app
     /** The number stamped on the tag: the address without its machine. */
@@ -100,6 +101,7 @@ class Api(val base: String, val token: String) {
                     val t = terms.getJSONObject(k)
                     agents += Agent(
                         terminal = t.optString("terminal"),
+                        pane = t.optString("pane"),
                         app = t.optString("app").ifBlank { "shell" }.takeUnless { it == "null" } ?: "shell",
                         label = t.optString("name").takeUnless { it.isBlank() || it == "null" },
                         state = State.of(t.optString("status").takeUnless { it == "null" }),
@@ -137,6 +139,59 @@ class Api(val base: String, val token: String) {
         val body = JSONObject().put("command", name)
         if (args != null) body.put("args", args)
         call("/api/do", body, timeoutMs = 20_000)
+    }
+
+    // Herdr's own commands, as the Mac's keys and menus do them.
+    private fun argvJson(argv: List<String>?) = argv?.let { JSONArray(it) }
+
+    suspend fun newTab(argv: List<String>?, name: String? = null) =
+        command("tab.new", JSONObject().apply { name?.let { put("name", it) }; argvJson(argv)?.let { put("argv", it) } })
+
+    suspend fun split(pane: String, direction: String, argv: List<String>?) =
+        command("pane.split", JSONObject().put("direction", direction).put("pane", pane).apply { argvJson(argv)?.let { put("argv", it) } })
+
+    suspend fun zoom(pane: String) = command("pane.zoom", JSONObject().put("pane", pane))
+    suspend fun closePane(pane: String) = command("pane.close", JSONObject().put("pane", pane))
+    suspend fun closeTab(tabId: String) = command("tab.close", JSONObject().put("id", tabId).put("confirmed", true))
+    suspend fun renameTab(tabId: String, name: String) = command("tab.rename", JSONObject().put("id", tabId).put("name", name))
+    suspend fun showTab(tabId: String) = command("tab.select", JSONObject().put("id", tabId))
+
+    /**
+     * Sends a file from the phone; herdr-core places it beside the terminal.
+     * Returns the path the program there can open.
+     */
+    suspend fun upload(
+        context: Context, uri: android.net.Uri, name: String, size: Long, terminal: String,
+        onProgress: (Float) -> Unit,
+    ): String = withContext(Dispatchers.IO) {
+        val q = "terminal=" + URLEncoder.encode(terminal, "UTF-8") + "&name=" + URLEncoder.encode(name, "UTF-8")
+        val c = open("/api/upload?$q", "POST", 10 * 60_000)
+        try {
+            c.doOutput = true
+            c.setRequestProperty("Content-Type", "application/octet-stream")
+            if (size > 0) c.setFixedLengthStreamingMode(size) else c.setChunkedStreamingMode(256 * 1024)
+            val input = context.contentResolver.openInputStream(uri) ?: throw ApiError("The phone couldn't open $name.")
+            input.use { src ->
+                c.outputStream.use { out ->
+                    val buf = ByteArray(256 * 1024)
+                    var sent = 0L
+                    while (true) {
+                        val n = src.read(buf)
+                        if (n < 0) break
+                        out.write(buf, 0, n)
+                        sent += n
+                        if (size > 0) onProgress((sent.toFloat() / size).coerceIn(0f, 1f))
+                    }
+                }
+            }
+            val ok = c.responseCode < 400
+            val text = (if (ok) c.inputStream else c.errorStream)?.bufferedReader()?.use { it.readText() } ?: ""
+            val json = runCatching { JSONObject(text) }.getOrElse { JSONObject() }
+            if (!ok) throw ApiError(json.optString("error", "The Mac didn't take $name."))
+            json.getString("path")
+        } finally {
+            c.disconnect()
+        }
     }
 
     suspend fun shot(maxSide: Int = 1600): Bitmap = withContext(Dispatchers.IO) {

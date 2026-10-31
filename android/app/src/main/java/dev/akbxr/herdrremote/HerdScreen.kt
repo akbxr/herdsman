@@ -1,6 +1,8 @@
 package dev.akbxr.herdrremote
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -177,7 +179,15 @@ private object SixDigits : VisualTransformation {
 private val order = listOf(State.NeedsYou, State.Working, State.Done, State.Idle)
 
 @Composable
-fun HerdScreen(host: String, herd: Herd?, problem: String?, onOpen: (Agent) -> Unit, onPairAgain: () -> Unit) {
+fun HerdScreen(
+    host: String,
+    herd: Herd?,
+    problem: String?,
+    onOpen: (Agent) -> Unit,
+    onPairAgain: () -> Unit,
+    onNewTab: () -> Unit = {},
+    onActions: (Agent) -> Unit = {},  // long press: split, zoom, rename, close
+) {
     val agents = herd?.agents.orEmpty().sortedWith(compareBy({ order.indexOf(it.state) }, { it.tabName }))
     val needs = agents.count { it.state == State.NeedsYou }
     val working = agents.count { it.state == State.Working }
@@ -197,6 +207,7 @@ fun HerdScreen(host: String, herd: Herd?, problem: String?, onOpen: (Agent) -> U
                         modifier = Modifier.weight(1f),
                     )
                     QuietButton("Pair again", onClick = onPairAgain)
+                    QuietButton("New tab", color = Ink.text, onClick = onNewTab)
                 }
                 Spacer(Modifier.height(6.dp))
                 val headline = when {
@@ -215,17 +226,25 @@ fun HerdScreen(host: String, herd: Herd?, problem: String?, onOpen: (Agent) -> U
             }
         }
         items(agents, key = { it.terminal }) { agent ->
-            AgentRow(agent, onClick = { onOpen(agent) })
+            AgentRow(agent, onClick = { onOpen(agent) }, onLongClick = { onActions(agent) })
+        }
+        if (agents.isNotEmpty()) item {
+            Text(
+                "Press and hold a terminal to split, zoom, rename or close it.",
+                style = Type.small, color = Ink.dust.copy(alpha = 0.7f),
+                modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp),
+            )
         }
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun AgentRow(agent: Agent, onClick: () -> Unit) {
+private fun AgentRow(agent: Agent, onClick: () -> Unit, onLongClick: () -> Unit) {
     Row(
         Modifier
             .fillMaxWidth()
-            .clickable(role = Role.Button, onClick = onClick)
+            .combinedClickable(role = Role.Button, onClick = onClick, onLongClick = onLongClick, onLongClickLabel = "Split, zoom, rename or close")
             .padding(horizontal = 24.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

@@ -144,6 +144,7 @@ func main() {
 	mux.HandleFunc("POST /api/keys", s.auth(s.keys))
 	mux.HandleFunc("POST /api/interrupt", s.auth(s.interrupt))
 	mux.HandleFunc("GET /api/attach", s.authQuery(s.attach)) // WebSocket: a live terminal
+	mux.HandleFunc("POST /api/upload", s.auth(s.upload))     // an attachment, placed beside a terminal
 
 	srv := &http.Server{Addr: listen, Handler: logRequests(mux), ReadHeaderTimeout: 10 * time.Second}
 	ln, err := net.Listen("tcp", listen)

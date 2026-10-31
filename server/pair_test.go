@@ -90,3 +90,24 @@ func TestPairLinkRoundTrip(t *testing.T) {
 		t.Fatalf("qrText: %v", err)
 	}
 }
+
+func TestSafeName(t *testing.T) {
+	for in, want := range map[string]string{
+		"IMG 0042.JPG":       "IMG_0042.JPG",
+		"../../etc/passwd":   "passwd",
+		"a/b\\c;rm -rf.png":  "crm_-rf.png",
+		"...":                "",
+		"foto liburan ✨.mp4": "foto_liburan_.mp4",
+	} {
+		got := safeName(in)
+		if want == "" {
+			if !strings.HasPrefix(got, "file-") {
+				t.Errorf("safeName(%q) = %q, want a file-<time> name", in, got)
+			}
+			continue
+		}
+		if got != want {
+			t.Errorf("safeName(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

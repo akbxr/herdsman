@@ -9,7 +9,9 @@
   @font-face { font-family: "JBM"; src: url("JetBrainsMono-Bold.ttf"); font-weight: 700; }
   /* Prompt and status-line icons (Powerlevel, starship): Nerd Font symbols. */
   @font-face { font-family: "NerdSymbols"; src: url("SymbolsNerdFontMono-Regular.ttf"); }
-  html, body { margin: 0; height: 100%; background: #24283b; overflow: hidden; }
+  /* Fixed: when the keyboard opens, Chromium scrolls the page to keep the
+     focused textarea in view and never scrolls back. Nothing here scrolls but #wrap. */
+  html, body { margin: 0; position: fixed; inset: 0; background: #24283b; overflow: hidden; }
   /* The terminal keeps the real terminal's size; when that is wider or
      taller than the phone even at the smallest font, this pans. */
   #wrap { position: absolute; inset: 0; overflow: auto; padding: 6px 6px 0 6px; box-sizing: border-box;
@@ -106,6 +108,7 @@
         real = { cols: m.cols, rows: m.rows };
         term.resize(m.cols, m.rows);
         fit();
+        follow();
       } else if (m.type === "exit") {
         if (/ended/.test(m.reason)) { ended = true; status("ended", { reason: m.reason }); }
       }
@@ -139,7 +142,27 @@
     start = null;
   }, { passive: true });
 
-  new ResizeObserver(() => { measurePhone(); fit(); }).observe(wrap);
+  // Keeps the cursor's row on screen inside #wrap (the terminal can be taller
+  // than the space the keyboard leaves), and the top when it all fits.
+  let followQueued = false;
+  function follow() {
+    if (followQueued) return;
+    followQueued = true;
+    requestAnimationFrame(() => {
+      followQueued = false;
+      window.scrollTo(0, 0);
+      const h = cellAt(term.options.fontSize).h;
+      if (!h) return;
+      if (wrap.scrollHeight <= wrap.clientHeight + 1) { wrap.scrollTop = 0; return; }
+      const top = 6 + term.buffer.active.cursorY * h;
+      if (top + h > wrap.scrollTop + wrap.clientHeight) wrap.scrollTop = top + h - wrap.clientHeight + 4;
+      else if (top < wrap.scrollTop) wrap.scrollTop = Math.max(0, top - 4);
+    });
+  }
+  term.onWriteParsed(follow);
+  window.addEventListener("scroll", () => window.scrollTo(0, 0));
+
+  new ResizeObserver(() => { measurePhone(); fit(); follow(); }).observe(wrap);
 
   window.hr = {
     connect(wsUrl) {

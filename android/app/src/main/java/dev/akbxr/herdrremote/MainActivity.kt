@@ -2,6 +2,8 @@ package dev.akbxr.herdrremote
 
 import android.content.Intent
 import android.os.Bundle
+import android.widget.Toast
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -51,6 +53,7 @@ private fun App(link: String?, onLinkUsed: () -> Unit) {
     }
     var host by remember { mutableStateOf(pairing.host) }
     var section by rememberSaveable { mutableStateOf(Section.Herd) }
+    val scope = rememberCoroutineScope()  // outlives sheets and screens: commands to the Mac finish
     var openTerminal by rememberSaveable { mutableStateOf<String?>(null) }
 
     // The herd, refreshed every two seconds while paired.
@@ -91,9 +94,15 @@ private fun App(link: String?, onLinkUsed: () -> Unit) {
         val agent = openTerminal?.let { t -> herd?.agents?.firstOrNull { it.terminal == t } }
         if (openTerminal != null) {
             BackHandler { openTerminal = null }
-            AgentScreen(api = a, terminal = openTerminal!!, agent = agent, onBack = { openTerminal = null })
+            AgentScreen(api = a, terminal = openTerminal!!, agent = agent, appScope = scope, onBack = { openTerminal = null })
             return@Box
         }
+
+        var newTab by remember { mutableStateOf(false) }
+        var actionsFor by remember { mutableStateOf<Agent?>(null) }
+        val tell = { p: String -> Toast.makeText(context, p, Toast.LENGTH_LONG).show() }
+        if (newTab) NewTabSheet(a, scope, onDismiss = { newTab = false }, onProblem = tell)
+        actionsFor?.let { PaneActions(a, it, scope, onDismiss = { actionsFor = null }, onProblem = tell) }
 
         Column(Modifier.fillMaxSize()) {
             Box(Modifier.weight(1f)) {
@@ -104,6 +113,8 @@ private fun App(link: String?, onLinkUsed: () -> Unit) {
                         problem = problem,
                         onOpen = { openTerminal = it.terminal },
                         onPairAgain = { pairing.forget(); api = null; herd = null },
+                        onNewTab = { newTab = true },
+                        onActions = { actionsFor = it },
                     )
                     Section.Screen -> ScreenScreen(api = a, herd = herd)
                 }
