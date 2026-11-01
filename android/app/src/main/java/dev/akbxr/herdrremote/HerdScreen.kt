@@ -198,7 +198,8 @@ fun HerdScreen(
     onOpen: (Agent) -> Unit,
     onPairAgain: () -> Unit,
     problemAction: Pair<String, () -> Unit>? = null,  // e.g. Open Tailscale
-    onNewTab: () -> Unit = {},
+    onNew: () -> Unit = {},  // New: a task (an agent on something) or a tab
+    onNewTask: () -> Unit = {},
     onActions: (Agent) -> Unit = {},  // long press: split, zoom, rename, close
     notifications: @Composable () -> Unit = {},
     notifyOn: Boolean = false,
@@ -229,7 +230,7 @@ fun HerdScreen(
                         ) { Icon(Icons.Filled.Notifications, contentDescription = "Notifications are on", tint = Ink.dust, modifier = Modifier.size(18.dp)) }
                     }
                     QuietButton("Pair again", onClick = onPairAgain)
-                    QuietButton("New tab", color = Ink.text, onClick = onNewTab)
+                    QuietButton("New", color = Ink.text, onClick = onNew)
                 }
                 Spacer(Modifier.height(6.dp))
                 val headline = when {
@@ -240,6 +241,10 @@ fun HerdScreen(
                     else -> "All quiet"
                 }
                 Text(headline, style = Type.headline, color = if (needs > 0) Ink.yellow else Ink.text)
+                if (herd != null && agents.isEmpty()) {
+                    Spacer(Modifier.height(16.dp))
+                    PrimaryButton("Start a task", modifier = Modifier.padding(end = 12.dp), onClick = onNewTask)
+                }
                 if (problem != null) {
                     Spacer(Modifier.height(14.dp))
                     Notice(problem, Modifier.padding(end = 12.dp), action = problemAction)

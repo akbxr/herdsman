@@ -44,6 +44,11 @@ type server struct {
 	herdr     string     // herdr-app binary
 	hc        string     // hc binary
 	shotDir   string
+
+	// For tests; empty or nil: the real ones.
+	home         string                 // where recent folders and projects are looked for
+	programsFile string                 // Herdr's programs.json
+	hasTool      func(name string) bool // whether a program is installed
 }
 
 func usage() {
@@ -115,6 +120,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("token: %v", err)
 	}
+	// Started in a terminal of hc's, the server still speaks for the phone:
+	// with that terminal's address hc would sign what it types as from there
+	// (<hc from="t7">…</hc>) and make what it starts its children.
+	os.Unsetenv("HC_TERMINAL_ID")
+	os.Unsetenv("HC_TERMINAL_SOCKET")
 	listen := *addr
 	if listen == "" {
 		// Under launchd this starts at login, often before Tailscale is up: wait for it.
@@ -155,6 +165,9 @@ func main() {
 	mux.HandleFunc("GET /api/changes", s.auth(s.changes))      // git status and diff of the agent's folder
 	mux.HandleFunc("GET /api/commands", s.auth(s.commands))    // "/" in the message box
 	mux.HandleFunc("GET /api/files", s.auth(s.files))          // "@" in the message box
+	mux.HandleFunc("GET /api/folders", s.auth(s.folders))      // where a new task can start
+	mux.HandleFunc("GET /api/agents", s.auth(s.agentsHandler)) // what a new task can run
+	mux.HandleFunc("POST /api/task", s.auth(s.task))           // a new tab running an agent on a task
 
 	s.events = newEventHub(s.hc)
 	go s.events.run(context.Background())

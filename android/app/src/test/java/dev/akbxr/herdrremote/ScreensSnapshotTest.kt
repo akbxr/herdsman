@@ -257,4 +257,63 @@ class ScreensSnapshotTest {
             )
         }
     }
+
+    private val home = "/Users/akbar"
+    private val folders = TaskFolders(
+        home,
+        recent = listOf(
+            TaskFolder("$home/Code/projects/herdr-remote", "herdr-remote"),
+            TaskFolder(home, "~"),
+            TaskFolder("$home/Code/projects/tego", "tego"),
+            TaskFolder("$home/Code/projects/3d-video/gen3", "gen3"),
+        ),
+        projects = listOf(
+            TaskFolder("$home/Code/projects/unli.dev", "unli.dev"),
+            TaskFolder("$home/Code/projects/kudu", "kudu"),
+            TaskFolder("$home/Code/projects/roblox/noturu-studio", "noturu-studio"),
+            TaskFolder("$home/Code/projects/hono-copilot-api", "hono-copilot-api"),
+            TaskFolder("$home/Code/projects/agy-proxy", "agy-proxy"),
+            TaskFolder("$home/Code/projects/docs.unli.dev", "docs.unli.dev"),
+        ),
+    )
+    private val taskAgents = listOf(TaskAgent("tego", "tego"), TaskAgent("claude", "Claude Code"), TaskAgent("codex", "Codex"), TaskAgent("omp", "omp"), TaskAgent("pi", "Pi"))
+
+    @Composable
+    private fun NewTask(
+        picked: String? = null, filter: String = "", prompt: String = "", busy: Boolean = false, problem: String? = null,
+        folders: TaskFolders? = this.folders, agents: List<TaskAgent>? = taskAgents,
+    ) = NoShimmer {
+        NewTaskForm(
+            host = "AKBARs-MacBook-Air.local", folders = folders, agents = agents, loadProblem = null, onRetry = {},
+            filter = filter, onFilter = {}, picked = picked, onPick = {}, agent = "claude", onAgent = {},
+            prompt = prompt, onPrompt = {}, busy = busy, problem = problem, onBack = {}, onStart = {},
+        )
+    }
+
+    @Test fun newTaskFolders() = paparazzi.snapshot { Frame { NewTask() } }
+
+    @Test fun newTaskFoldersLoading() = paparazzi.snapshot { Frame { NewTask(folders = null, agents = null) } }
+
+    @Test fun newTaskFilter() = paparazzi.snapshot { Frame { NewTask(filter = "unli") } }
+
+    @Test fun newTaskPrompt() = paparazzi.snapshot {
+        Frame { NewTask(picked = "$home/Code/projects/herdr-remote", prompt = "The login screen forgets the address after a restart. Find out why, fix it and run the tests.") }
+    }
+
+    @Test fun newTaskProblem() = paparazzi.snapshot {
+        Frame {
+            NewTask(
+                picked = "$home/Code/projects/herdr-remote", prompt = "Run the tests", busy = false,
+                problem = "herdr-app: no window (is the Herdr window open?)",
+            )
+        }
+    }
+
+    @Test fun newTaskStarting() = paparazzi.snapshot {
+        Frame { NewTask(picked = "$home/Code/projects/herdr-remote", prompt = "Run the tests", busy = true) }
+    }
+
+    @Test fun herdEmpty() = paparazzi.snapshot {
+        Frame { HerdScreen("AKBARs-MacBook-Air.local", Herd("main-full", emptyList(), emptyList()), problem = null, onOpen = {}, onPairAgain = {}) }
+    }
 }

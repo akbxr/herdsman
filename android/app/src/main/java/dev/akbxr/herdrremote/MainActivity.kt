@@ -69,6 +69,7 @@ private fun App(link: String?, onLinkUsed: () -> Unit, openFromNotification: Str
     var section by rememberSaveable { mutableStateOf(Section.Herd) }
     val scope = rememberCoroutineScope()  // outlives sheets and screens: commands to the Mac finish
     var openTerminal by rememberSaveable { mutableStateOf<String?>(null) }
+    var newTask by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(openFromNotification) {
         openFromNotification?.let { openTerminal = it; section = Section.Herd; onOpened() }
     }
@@ -108,6 +109,7 @@ private fun App(link: String?, onLinkUsed: () -> Unit, openFromNotification: Str
                     host = info.host
                     herd = null
                     openTerminal = null
+                    newTask = false
                     api = Api(info.address, info.token)
                 },
                 onKeepCurrent = if (a != null) onLinkUsed else null,
@@ -122,6 +124,17 @@ private fun App(link: String?, onLinkUsed: () -> Unit, openFromNotification: Str
             return@Box
         }
 
+        if (newTask) {
+            BackHandler { newTask = false }
+            NewTaskScreen(
+                api = a, host = host,
+                onBack = { newTask = false },
+                onStarted = { t -> newTask = false; section = Section.Herd; openTerminal = t },
+            )
+            return@Box
+        }
+
+        var newMenu by remember { mutableStateOf(false) }
         var newTab by remember { mutableStateOf(false) }
         var actionsFor by remember { mutableStateOf<Agent?>(null) }
         var notifyMenu by remember { mutableStateOf(false) }
@@ -132,6 +145,14 @@ private fun App(link: String?, onLinkUsed: () -> Unit, openFromNotification: Str
         }
         if (notifyMenu) NotificationsSheet(onTurnOff = { setNotify(false) }, onDismiss = { notifyMenu = false })
         val tell = { p: String -> Toast.makeText(context, p, Toast.LENGTH_LONG).show() }
+        if (newMenu) ActionSheet(
+            title = "New",
+            onDismiss = { newMenu = false },
+            actions = listOf(
+                SheetAction("New task", "An agent in a folder you pick, on what you ask; opens here") { newMenu = false; newTask = true },
+                SheetAction("New tab", "A shell or a program, in the folder of the terminal focused on the Mac") { newMenu = false; newTab = true },
+            ),
+        )
         if (newTab) NewTabSheet(a, scope, onDismiss = { newTab = false }, onProblem = tell)
         actionsFor?.let { PaneActions(a, it, scope, onDismiss = { actionsFor = null }, onProblem = tell) }
 
@@ -145,7 +166,8 @@ private fun App(link: String?, onLinkUsed: () -> Unit, openFromNotification: Str
                         problemAction = problemAction,
                         onOpen = { openTerminal = it.terminal },
                         onPairAgain = { Watch.stop(context); pairing.forget(); notify = false; api = null; herd = null },
-                        onNewTab = { newTab = true },
+                        onNew = { newMenu = true },
+                        onNewTask = { newTask = true },
                         onActions = { actionsFor = it },
                         notifications = { NotificationsRow(on = notify, onChange = setNotify) },
                         notifyOn = notify,

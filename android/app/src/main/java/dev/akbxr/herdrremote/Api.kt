@@ -198,6 +198,26 @@ class Api(val base: String, val token: String) {
         return Changes.from(call("/api/changes?$q", timeoutMs = 20_000))
     }
 
+    /** Where a new task can start: recent folders, then git projects (NewTask.kt). */
+    suspend fun folders(): TaskFolders {
+        val o = call("/api/folders", timeoutMs = 15_000)
+        fun list(key: String) = o.optJSONArray(key)?.let { a ->
+            (0 until a.length()).map { a.getJSONObject(it).let { f -> TaskFolder(f.optString("path"), f.optString("name")) } }
+        }.orEmpty()
+        return TaskFolders(o.optString("home"), list("recent"), list("projects"))
+    }
+
+    /** The agents installed on the Mac. */
+    suspend fun agents(): List<TaskAgent> {
+        val a = call("/api/agents").optJSONArray("agents") ?: return emptyList()
+        return (0 until a.length()).map { a.getJSONObject(it).let { o -> TaskAgent(o.optString("id"), o.optString("name")) } }
+    }
+
+    /** Opens a tab in [cwd] running [agent] on [prompt]; returns its terminal. */
+    suspend fun startTask(cwd: String, agent: String, prompt: String): String =
+        call("/api/task", JSONObject().put("cwd", cwd).put("agent", agent).put("prompt", prompt), timeoutMs = 30_000)
+            .optString("terminal").ifBlank { throw ApiError("The Mac opened the tab but didn't say which terminal it is.") }
+
     suspend fun interrupt(terminal: String) {
         call("/api/interrupt", JSONObject().put("terminal", terminal), timeoutMs = 20_000)
     }
@@ -354,6 +374,11 @@ class Pairing(context: Context) {
     var notify: Boolean
         get() = prefs.getBoolean("notify", false)
         set(v) = prefs.edit().putBoolean("notify", v).apply()
+
+    /** The agent the last new task ran (NewTask.kt): picked again next time. */
+    var lastAgent: String
+        get() = prefs.getString("last-agent", "") ?: ""
+        set(v) = prefs.edit().putString("last-agent", v).apply()
 
     /** "Not now" on the run-in-the-background hint: don't show it again. */
     var backgroundHintDismissed: Boolean
