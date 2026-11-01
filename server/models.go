@@ -639,53 +639,20 @@ func claudeLine(l []byte) (id, label, effort string) {
 	return
 }
 
-// terminalNow is what runs in a terminal and the state it reports, per hc.
+// terminalNow is what runs in a terminal and the state it reports, per hc
+// (or the herdr CLI).
 type terminalNow struct {
 	fg    foregroundInfo
 	state string // idle, working, blocked, done, error; "" when it says nothing
 }
 
 func (s *server) terminalNow(ctx context.Context, terminal string) (terminalNow, error) {
-	out, err := run(ctx, 5*time.Second, s.hc, "get", "--json", terminal)
-	if err != nil {
-		return terminalNow{}, err
-	}
-	var g struct {
-		Cwd        string
-		Foreground *foregroundInfo
-		Status     *struct{ App, State string }
-	}
-	if err := json.Unmarshal(out, &g); err != nil {
-		return terminalNow{}, err
-	}
-	var t terminalNow
-	t.fg.Cwd = g.Cwd
-	if g.Foreground != nil {
-		t.fg = *g.Foreground
-		if t.fg.Cwd == "" {
-			t.fg.Cwd = g.Cwd
-		}
-	}
-	if g.Status != nil {
-		if t.fg.Name == "" {
-			t.fg.Name = g.Status.App
-		}
-		t.state = g.Status.State
-	}
-	return t, nil
+	return s.backend(terminal).now(ctx, terminal)
 }
 
 // screenText: what the terminal shows now.
 func (s *server) screenText(ctx context.Context, terminal string) (string, error) {
-	out, err := run(ctx, 3*time.Second, s.hc, "read", "--json", terminal)
-	if err != nil {
-		return "", err
-	}
-	var r struct{ Text string }
-	if err := json.Unmarshal(out, &r); err != nil {
-		return "", err
-	}
-	return r.Text, nil
+	return s.backend(terminal).screen(ctx, terminal, 3*time.Second)
 }
 
 // Variables for the tests.
@@ -780,7 +747,7 @@ func (s *server) session(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	for _, c := range cmds {
-		if _, err := run(r.Context(), 40*time.Second, s.hc, "send", "--json", req.Terminal, c); err != nil {
+		if _, err := s.backend(req.Terminal).send(r.Context(), req.Terminal, c, false); err != nil {
 			writeErr(w, http.StatusBadGateway, err)
 			return
 		}
@@ -811,7 +778,7 @@ func (s *server) confirmSwitch(ctx context.Context, terminal string) {
 			continue
 		}
 		if strings.HasPrefix(p.Options[p.Selected], "Yes, switch to") {
-			run(ctx, 10*time.Second, s.hc, "keys", "--json", terminal, "enter")
+			s.backend(terminal).keys(ctx, terminal, []string{"enter"}, 10*time.Second)
 		}
 		return
 	}

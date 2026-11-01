@@ -13,6 +13,7 @@ package main
 // meanwhile, or a newer one, is left alone.
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -53,12 +54,19 @@ func (s *server) answer(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, errPromptGone)
 		return
 	}
-	var args []string
+	b := s.backend(req.Terminal)
+	var do func(ctx context.Context) ([]byte, error)
+	keys := func(k ...string) func(ctx context.Context) ([]byte, error) {
+		return func(ctx context.Context) ([]byte, error) { return b.keys(ctx, req.Terminal, k, 40*time.Second) }
+	}
+	send := func(force bool) func(ctx context.Context) ([]byte, error) {
+		return func(ctx context.Context) ([]byte, error) { return b.send(ctx, req.Terminal, req.Text, force) }
+	}
 	switch {
 	case cur.State == "blocked" && req.Answer == "allow":
-		args = []string{"keys", "--json", req.Terminal, "enter"}
+		do = keys("enter")
 	case cur.State == "blocked" && req.Answer == "deny":
-		args = []string{"keys", "--json", req.Terminal, "esc"}
+		do = keys("esc")
 	case cur.State == "blocked" && req.Answer == "option":
 		// The menu is read again now: the keys go to the choice as it is on
 		// screen, and nothing is typed when it isn't there anymore.
@@ -67,22 +75,22 @@ func (s *server) answer(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadGateway, err)
 			return
 		}
-		keys := pickKeys(p, req.Option)
-		if keys == nil {
+		picks := pickKeys(p, req.Option)
+		if picks == nil {
 			writeErr(w, http.StatusConflict, errors.New("That choice isn't on your Mac's screen anymore."))
 			return
 		}
-		args = append([]string{"keys", "--json", req.Terminal}, keys...)
+		do = keys(picks...)
 	case cur.State == "blocked" && req.Answer == "reply":
-		args = []string{"send", "--json", "--force", req.Terminal, req.Text}
+		do = send(true)
 	case (cur.State == "done" || cur.State == "error") && req.Answer == "reply":
-		args = []string{"send", "--json", req.Terminal, req.Text}
+		do = send(false)
 	default:
 		writeErr(w, http.StatusConflict, errPromptGone)
 		return
 	}
 
-	out, err := run(r.Context(), 40*time.Second, s.hc, args...)
+	out, err := do(r.Context())
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return

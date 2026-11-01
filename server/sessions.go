@@ -537,15 +537,20 @@ const remoteSessionsNote = "Earlier sessions are listed for this Mac only."
 // the terminal of each.
 func (s *server) runningSessions(ctx context.Context) map[fileID]string {
 	out := map[fileID]string{}
-	ls, err := run(ctx, 3*time.Second, s.hc, "ls", "--json")
-	if err != nil {
-		return out
-	}
 	var list struct {
 		Terminals []struct{ Address, State string }
 	}
-	if json.Unmarshal(ls, &list) != nil {
-		return out
+	if ls, err := run(ctx, 3*time.Second, s.hc, "ls", "--json"); err == nil {
+		json.Unmarshal(ls, &list)
+	}
+	if s.herdrSock != "" { // the herdr CLI's panes too
+		hctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		if snap, err := s.herdrSnapshot(hctx); err == nil {
+			for _, p := range snap.Panes {
+				list.Terminals = append(list.Terminals, struct{ Address, State string }{herdrAddr(p.PaneID), ""})
+			}
+		}
+		cancel()
 	}
 	transcript := s.transcriptOf
 	if transcript == nil {
