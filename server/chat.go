@@ -62,7 +62,6 @@ type chatResult struct {
 	Items   []ChatItem  `json:"items"`
 	Version string      `json:"version"`          // changes when the transcript does
 	Status  *AgentEvent `json:"status,omitempty"` // what it reports now: waiting for you, and on what
-	Live    []string    `json:"live,omitempty"`   // while it works: what its screen shows being written (live.go)
 	Start   bool        `json:"start"`            // nothing older to come: the items begin the conversation (or the most read does)
 	Limit   int         `json:"limit"`            // the most items asked for
 	Current             // the model and thinking level it runs with now (models.go)
@@ -147,14 +146,9 @@ func (s *server) chat(w http.ResponseWriter, r *http.Request) {
 		}
 		s.events.mu.Unlock()
 	}
-	// The screen: what a working agent is writing, and the model and level
-	// tego and Claude Code show.
-	working := res.Status != nil && res.Status.State == "working"
-	if working || agent == "tego" || agent == "claude" {
+	// The screen: the model and level tego and Claude Code show.
+	if agent == "tego" || agent == "claude" {
 		if screen, err := s.screenText(r.Context(), t); err == nil {
-			if working {
-				res.Live = liveTail(screen)
-			}
 			res.Current = s.current(agent, fg.Argv, screen, path)
 		}
 	}
@@ -164,7 +158,7 @@ func (s *server) chat(w http.ResponseWriter, r *http.Request) {
 			res.Version = fmt.Sprintf("%d-%d-%d", st.Size(), st.ModTime().UnixNano(), limit)
 			if c, ok := cachedChat(path, limit, st); ok && r.URL.Query().Get("version") == res.Version {
 				writeJSON(w, map[string]any{"agent": agent, "source": path, "version": res.Version, "same": true,
-					"status": res.Status, "live": res.Live, "start": c.start, "limit": limit,
+					"status": res.Status, "start": c.start, "limit": limit,
 					"model": res.Model, "modelLabel": res.ModelLabel, "thinking": res.Thinking})
 				return
 			}

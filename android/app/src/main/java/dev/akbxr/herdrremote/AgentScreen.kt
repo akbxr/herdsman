@@ -462,7 +462,6 @@ fun AgentScreen(api: Api, terminal: String, agent: Agent?, appScope: CoroutineSc
                 prompt = prompt,
                 pending = pending.map { it.text },
                 loading = chat == null,
-                live = chat?.live.orEmpty(),
                 list = chatList,
                 hasOlder = chatHasOlder,
                 loadingOlder = chatLoadingOlder,

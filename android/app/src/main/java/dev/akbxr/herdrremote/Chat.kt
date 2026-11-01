@@ -105,7 +105,6 @@ data class ChatLog(
     val version: String,
     val items: List<ChatItem>?,
     val status: AgentEvent?,
-    val live: List<String> = emptyList(),  // while it works: what its screen shows being written
     val start: Boolean = true,             // the items begin the conversation: nothing older to load
     val limit: Int = CHAT_PAGE,            // the most items asked for
     val current: CurrentModel = CurrentModel(),  // its model and thinking level now (Models.kt)
@@ -130,7 +129,6 @@ data class ChatLog(
                 version = o.optString("version"),
                 items = items,
                 status = o.optJSONObject("status")?.let(AgentEvent::from),
-                live = o.optJSONArray("live")?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: emptyList(),
                 // A Mac from before paging: all it has is all there is.
                 start = o.optBoolean("start", true),
                 limit = o.optInt("limit", asked),
@@ -159,7 +157,6 @@ fun ChatView(
     prompt: Prompt? = null,               // the menu on its screen, when it waits for you
     pending: List<String> = emptyList(),  // sent from here, not in the transcript yet
     loading: Boolean = false,
-    live: List<String> = emptyList(),     // the screen's last lines while it works
     list: LazyListState = rememberLazyListState(),
     hasOlder: Boolean = false,            // older messages to load
     loadingOlder: Boolean = false,        // asked for, on their way
@@ -180,15 +177,13 @@ fun ChatView(
     val working = status?.state == "working"
     // A tool call without its result while the agent works: running now.
     val running = working && items.lastOrNull()?.let { it.kind == "tools" && it.tools.lastOrNull()?.result.isNullOrEmpty() } == true
-    val showLive = working && live.any { it.isNotBlank() }
-    // "Thinking…" says nothing the live screen or a running tool doesn't.
-    val foot = status != null && status.state in setOf("working", "blocked", "error") && !running && !showLive
+    val foot = status != null && status.state in setOf("working", "blocked", "error") && !running
     val showStart = reachedStart && items.isNotEmpty()
     val head = if (showStart) 1 else 0
-    val tail = head + items.size + pending.size + (if (showLive) 1 else 0) + (if (foot) 1 else 0)
+    val tail = head + items.size + pending.size + (if (foot) 1 else 0)
     val searching = search != null && search.query.isNotBlank()
     var first by remember { mutableStateOf(true) }
-    LaunchedEffect(tail, items.lastOrNull(), live.lastOrNull()) {
+    LaunchedEffect(tail, items.lastOrNull()) {
         if (tail == 0) return@LaunchedEffect
         if (first) { list.scrollToItem(tail - 1); first = false }
         else if (atBottom && !searching) list.animateScrollToItem(tail - 1)
@@ -234,7 +229,6 @@ fun ChatView(
                     }
                 }
                 itemsIndexed(pending, key = { i, _ -> "pending$i" }) { _, text -> UserBubble(text, sending = true) }
-                if (showLive) item(key = "live") { LiveScreen(live) }
                 if (foot) item(key = "status") { StatusFoot(status!!, agentName, prompt, onAnswer, onOption, onOpenTerminal) }
             }
         }
@@ -404,37 +398,6 @@ private fun StatusFoot(
                 }
                 QuietButton(if (status.kind == "permission") "Terminal" else "Answer in the terminal", color = Ink.text, onClick = onOpenTerminal)
             }
-        }
-    }
-}
-
-/**
- * What the agent is writing now, as its terminal shows it: the transcript
- * only has finished messages, so a long answer or a running command shows
- * here first.
- */
-@Composable
-private fun LiveScreen(lines: List<String>) {
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
-            .background(TermBg)
-            .border(1.dp, Ink.rule, RoundedCornerShape(10.dp))
-            .padding(horizontal = 12.dp, vertical = 9.dp),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            PulseDot(Ink.blue, size = 6.dp)
-            Spacer(Modifier.width(8.dp))
-            ShimmerText("Live on the terminal", Type.small.copy(fontSize = 11.sp), base = Ink.dust, light = Ink.text)
-        }
-        Box(Modifier.padding(top = 6.dp).horizontalScroll(rememberScrollState())) {
-            Text(
-                lines.joinToString("\n"),
-                style = Type.small.copy(fontFamily = JetBrains, fontSize = 11.5.sp, lineHeight = 16.sp),
-                color = Ink.text.copy(alpha = 0.85f),
-                softWrap = false,
-            )
         }
     }
 }
