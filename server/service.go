@@ -76,7 +76,8 @@ func plist(bin string, args []string) string {
 	for _, a := range append([]string{bin, "serve"}, args...) {
 		fmt.Fprintf(&argv, "\n\t\t<string>%s</string>", xmlText(a))
 	}
-	path := strings.Join([]string{filepath.Dir(bin), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"}, ":")
+	// /usr/sbin: lsof, which tells which transcript an agent has open.
+	path := strings.Join([]string{filepath.Dir(bin), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"}, ":")
 	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">

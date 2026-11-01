@@ -206,6 +206,15 @@ func pidTree(pid int) []int {
 	return tree
 }
 
+// lsofPath: macOS keeps lsof in /usr/sbin, which a LaunchAgent's PATH may
+// leave out.
+func lsofPath() string {
+	if _, err := os.Stat("/usr/sbin/lsof"); err == nil {
+		return "/usr/sbin/lsof"
+	}
+	return "lsof"
+}
+
 // openFile finds a .jsonl under dir that one of the processes has open.
 func openFile(pids []int, dir string) string {
 	if len(pids) == 0 {
@@ -215,7 +224,7 @@ func openFile(pids []int, dir string) string {
 	for i, p := range pids {
 		list[i] = fmt.Sprint(p)
 	}
-	out, err := exec.Command("lsof", "-a", "-p", strings.Join(list, ","), "-Fn").Output()
+	out, err := exec.Command(lsofPath(), "-a", "-p", strings.Join(list, ","), "-Fn").Output()
 	if err != nil && len(out) == 0 {
 		return ""
 	}

@@ -143,7 +143,7 @@ fun ChatView(
         SkeletonList(modifier)
         return
     }
-    if (items.isEmpty() && status == null && pending.isEmpty()) {
+    if (items.isEmpty() && pending.isEmpty() && !foot) {
         Box(modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
             Text("Nothing said yet. Write to $agentName below.", style = Type.small, color = Ink.dust)
         }
