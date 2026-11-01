@@ -56,7 +56,7 @@ type server struct {
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, `herdsman: control the Herdr app on this Mac from a phone.
+	fmt.Fprintf(os.Stderr, `herdsman: look after the coding agents in Herdr (the app and the CLI) on this Mac from a phone.
 
 Usage:
   herdsman install     run at login (launchd), and show a QR code to pair a phone
