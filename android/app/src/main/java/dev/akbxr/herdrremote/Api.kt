@@ -552,7 +552,7 @@ class Api(val base: String, val token: String) {
         herdr("tab.focus", JSONObject().put("tab_id", tabId))
     }
     suspend fun herdrSplit(paneId: String, direction: String) =
-        herdr("pane.split", JSONObject().put("pane_id", paneId).put("direction", direction))
+        herdr("pane.split", JSONObject().put("target_pane_id", paneId).put("direction", direction))  // herdr's name for the pane split
     suspend fun herdrRenameTab(tabId: String, label: String) = herdr("tab.rename", JSONObject().put("tab_id", tabId).put("label", label))
     suspend fun herdrClosePane(paneId: String) = herdr("pane.close", JSONObject().put("pane_id", paneId), confirmed = true)
     suspend fun herdrCloseTab(tabId: String) = herdr("tab.close", JSONObject().put("tab_id", tabId), confirmed = true)
