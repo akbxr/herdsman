@@ -169,6 +169,8 @@ func main() {
 	mux.HandleFunc("GET /api/folders", s.auth(s.folders))      // where a new task can start
 	mux.HandleFunc("GET /api/agents", s.auth(s.agentsHandler)) // what a new task can run
 	mux.HandleFunc("POST /api/task", s.auth(s.task))           // a new tab running an agent on a task
+	mux.HandleFunc("GET /api/models", s.auth(s.modelsHandler)) // the models and thinking levels an agent offers
+	mux.HandleFunc("POST /api/session", s.auth(s.session))     // switch a running agent's model or thinking level
 
 	s.events = newEventHub(s.hc)
 	go s.events.run(context.Background())

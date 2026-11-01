@@ -113,11 +113,15 @@ fun Suggestions(rows: List<Pair<String, String>>, onPick: (Int) -> Unit, modifie
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun SnippetRow(snippets: List<String>, onUse: (String) -> Unit, onEdit: (Int) -> Unit, onAdd: () -> Unit, onEsc: () -> Unit) {
+fun SnippetRow(
+    snippets: List<String>, onUse: (String) -> Unit, onEdit: (Int) -> Unit, onAdd: () -> Unit, onEsc: () -> Unit,
+    leading: @Composable () -> Unit = {},  // before Esc: the model chip (Models.kt)
+) {
     Row(
         Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp, vertical = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
+        leading()
         Chip("Esc", mono = true, onClick = onEsc)
         snippets.forEachIndexed { i, s -> Chip(s, onClick = { onUse(s) }, onLongClick = { onEdit(i) }) }
         Chip("+", onClick = onAdd, label = "Add a quick reply")

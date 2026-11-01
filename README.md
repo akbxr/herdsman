@@ -127,6 +127,26 @@ The phone needs Tailscale on too, signed in to the same account.
   finds files in the folder the agent works in. Under it, **Esc** stops the
   agent, and quick replies (continue, yes, /compact…) put their text in the
   box; hold one to change or remove it, **+** adds one.
+- **Model and thinking**: on the Chat tab of tego and Claude Code, the first
+  chip under the message box shows what the agent runs with ("◆ Opus 5.5 ·
+  high"). Tap it for a sheet with the thinking levels (Claude calls them
+  effort) and the models; **Apply** types the agent's own commands
+  (`/thinking low`, `/model anthropic/claude-sonnet-5-5:low` for tego;
+  `/model claude-sonnet-5-5`, `/effort low` for Claude Code, confirming its
+  "Switch model?" question). Only while the agent is idle or done: while it
+  works or waits for you the sheet says so and Apply stays off. The chip
+  shows the new choice at once, then what the agent's screen says. Both
+  agents keep what you pick as their default for new sessions too. tego's
+  models are the ones it fetched from your providers (`~/.tego/models.json`),
+  Claude Code's those of its `/model` picker. The current values come from
+  tego's status line, and from Claude Code's transcript, screen, flags and
+  settings. A running Codex can't switch (its `/model` takes no argument).
+- **New task** (**New** on the herd): a folder, an agent, what to do; the Mac opens
+  a tab there running it. For tego, Claude Code and Codex, **Model** and
+  **Thinking** pickers next to the agents pass `--model`/`--thinking`
+  (tego), `--model`/`--effort` (Claude Code) or `-m`/`-c
+  model_reasoning_effort=` (Codex); "Default" leaves the agent's own. The
+  phone remembers the last pick per agent.
 - **Terminal**: the terminal itself, live (`hc attach` over a
   WebSocket, drawn by xterm.js with the Mac's Tokyo Night colors and Nerd
   Font icons). Tap it to type: the phone's keyboard goes straight to the
@@ -182,12 +202,17 @@ All under `/api`, with `Authorization: Bearer <token>` (except `/pair`):
 | POST | `/upload?terminal=t12&name=x.png` | body = the file; `hc put` places it beside the terminal → `{path, bytes}` |
 | GET | `/events?after=41&wait=25` | long poll for agents' status changes → `{seq, events}`; without `after`: `{seq, current}` |
 | POST | `/answer` | `{terminal, seq, answer: allow\|deny\|reply\|option, text?, option?}`: answers a waiting agent; 409 when the prompt is gone |
-| GET | `/chat?terminal=t12&version=&limit=120` | the last `limit` items of the agent's conversation from its transcript → `{agent, source, version, items, status, live, start, limit}`; `start: true` when nothing older is left; `same: true` when unchanged (the version includes the limit). Items carry a stable `id` and, for your messages, picture ids in `images` |
+| GET | `/chat?terminal=t12&version=&limit=120` | the last `limit` items of the agent's conversation from its transcript → `{agent, source, version, items, status, live, start, limit, model, modelLabel, thinking}`; `start: true` when nothing older is left; `same: true` when unchanged (the version includes the limit). Items carry a stable `id` and, for your messages, picture ids in `images` |
 | GET | `/image?id=&w=480` | a picture of the chat by id (an image block's bytes, or an image file named in a message), scaled to fit `w` pixels when given |
 | GET | `/prompt?terminal=t12` | the menu on the terminal's screen → `{prompt: {question, options, selected}}` or `null` |
 | GET | `/changes?terminal=t12&version=` | uncommitted git changes in the agent's folder: files with status, counts and patch |
 | GET | `/commands?terminal=t12` | the agent's slash commands, custom commands and skills |
 | GET | `/files?terminal=t12&q=att` | files in the agent's folder, best matches first |
+| GET | `/folders` | where a new task can start: `{home, recent, projects}` |
+| GET | `/agents` | the agents installed on the Mac |
+| POST | `/task` | `{cwd, agent, prompt, model?, thinking?}`: a new tab running the agent; model and thinking become its start flags, checked against `/models` → `{terminal, tab, prompt}` |
+| GET | `/models?agent=tego\|claude\|codex` | `{agent, models: [{id, label, group}], thinking: [{id, label, detail}], thinkingName, live, note}` (kept a minute) |
+| POST | `/session` | `{terminal, agent?, model?, thinking?}`: switches a running tego or Claude Code with its own slash commands → `{agent, sent, current}`; 409 while it works or waits for you, or when the terminal no longer runs `agent`; 400 for a model or level it doesn't offer |
 
 The terminal page (`android/app/src/main/assets/term/terminal.html`) also
 opens in a desktop browser for debugging: `terminal.html#ws=<attach URL>`.

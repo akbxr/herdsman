@@ -162,9 +162,10 @@ func toolInstalled(name string) bool {
 	return false
 }
 
-// taskLaunch: the argv to start, and how the prompt gets there.
-func taskLaunch(a AgentInfo, prompt string) (argv []string, delivery string) {
-	argv = append([]string(nil), a.Argv...)
+// taskLaunch: the argv to start (with flags, before the prompt), and how
+// the prompt gets there.
+func taskLaunch(a AgentInfo, prompt string, flags ...string) (argv []string, delivery string) {
+	argv = append(append([]string(nil), a.Argv...), flags...)
 	switch {
 	case prompt == "":
 		return argv, "none"
@@ -175,12 +176,16 @@ func taskLaunch(a AgentInfo, prompt string) (argv []string, delivery string) {
 	}
 }
 
-// task starts one: {"cwd": "/Users/me/Code/app", "agent": "claude", "prompt": "…"}.
+// task starts one: {"cwd": "/Users/me/Code/app", "agent": "claude",
+// "prompt": "…", "model": "claude-sonnet-5-5", "thinking": "high"};
+// model and thinking are optional (the agent's own default).
 func (s *server) task(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Cwd    string `json:"cwd"`
-		Agent  string `json:"agent"`
-		Prompt string `json:"prompt"`
+		Cwd      string `json:"cwd"`
+		Agent    string `json:"agent"`
+		Prompt   string `json:"prompt"`
+		Model    string `json:"model"`
+		Thinking string `json:"thinking"`
 	}
 	if err := decode(r, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, errors.New("need {cwd, agent, prompt}"))
@@ -213,7 +218,22 @@ func (s *server) task(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	argv, delivery := taskLaunch(*agent, prompt)
+	var flags []string
+	if req.Model != "" || req.Thinking != "" {
+		kind := agentOf(foregroundInfo{Name: agent.ID, Argv: agent.Argv}) // programs.json may run it by another name
+		choices := s.modelChoices(kind)
+		if choices == nil {
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("%s doesn't take a model from here", agent.Name))
+			return
+		}
+		if err := choices.check(req.Model, req.Thinking); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		flags = startFlags(kind, req.Model, req.Thinking)
+	}
+
+	argv, delivery := taskLaunch(*agent, prompt, flags...)
 	args, _ := json.Marshal(map[string]any{"folder": cwd, "argv": argv})
 	out, err := run(r.Context(), 20*time.Second, s.herdr, "do", "tab.new", string(args))
 	if err != nil {

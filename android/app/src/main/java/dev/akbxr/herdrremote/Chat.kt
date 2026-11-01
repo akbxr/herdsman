@@ -108,6 +108,7 @@ data class ChatLog(
     val live: List<String> = emptyList(),  // while it works: what its screen shows being written
     val start: Boolean = true,             // the items begin the conversation: nothing older to load
     val limit: Int = CHAT_PAGE,            // the most items asked for
+    val current: CurrentModel = CurrentModel(),  // its model and thinking level now (Models.kt)
 ) {
     companion object {
         fun from(o: JSONObject, asked: Int = CHAT_PAGE): ChatLog {
@@ -133,6 +134,7 @@ data class ChatLog(
                 // A Mac from before paging: all it has is all there is.
                 start = o.optBoolean("start", true),
                 limit = o.optInt("limit", asked),
+                current = CurrentModel.from(o),
             )
         }
     }

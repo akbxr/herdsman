@@ -10,6 +10,12 @@ import kotlinx.coroutines.awaitCancellation
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material3.Text
 import androidx.compose.foundation.layout.padding
 import androidx.compose.ui.unit.dp
@@ -137,10 +143,10 @@ class ScreensSnapshotTest {
     private fun ChatScreen(
         status: AgentEvent?, message: String = "", suggestions: List<Pair<String, String>> = emptyList(),
         items: List<ChatItem> = chatItems, prompt: Prompt? = null, pending: List<String> = emptyList(),
-        mode: String = "chat", changes: Changes? = null,
+        mode: String = "chat", changes: Changes? = null, modelChip: (@Composable () -> Unit)? = null,
     ) {
         AgentContent(
-            mode = mode, chatAvailable = true, suggestions = suggestions,
+            mode = mode, chatAvailable = true, suggestions = suggestions, modelChip = modelChip,
             snippets = Snippets.DEFAULT,
             chatSlot = { ChatView(items, status, "tego", prompt = prompt, pending = pending, onAnswer = {}, onOpenTerminal = {}) },
             changesSlot = { ChangesView(changes, changes?.files.orEmpty()) },
@@ -390,6 +396,121 @@ class ScreensSnapshotTest {
 
     @Test fun newTaskStarting() = paparazzi.snapshot {
         Frame { NewTask(picked = "$home/Code/projects/herdr-remote", prompt = "Run the tests", busy = true) }
+    }
+
+    // The model and thinking level (Models.kt). The sheet's content is drawn
+    // on its own: layoutlib can't draw a ModalBottomSheet's window.
+    private val tegoChoices = ModelChoices(
+        agent = "tego",
+        models = listOf(
+            ModelChoice("anthropic/claude-opus-5-5", "Opus 5.5", "anthropic"),
+            ModelChoice("anthropic/claude-sonnet-5-5", "Sonnet 5.5", "anthropic"),
+            ModelChoice("anthropic/claude-haiku-5-5", "Haiku 5.5", "anthropic"),
+            ModelChoice("openai-codex/gpt-6-luna", "gpt-6-luna", "openai-codex"),
+            ModelChoice("openai-codex/gpt-5.6-terra", "gpt-5.6-terra", "openai-codex"),
+        ),
+        thinking = listOf(
+            LevelChoice("off", "Off"), LevelChoice("low", "Low"), LevelChoice("medium", "Medium"), LevelChoice("high", "High"),
+            LevelChoice("xhigh", "Extra high", "Long agentic work; newest models only"), LevelChoice("max", "Max", "No limit on thinking; newest models only"),
+        ),
+        thinkingName = "Thinking", live = true, note = "tego keeps what you pick as its default for new sessions too.",
+    )
+    private val claudeChoices = ModelChoices(
+        agent = "claude",
+        models = listOf(
+            ModelChoice("default", "Default"), ModelChoice("claude-opus-5-5", "Opus 5.5"), ModelChoice("claude-fable-5-1", "Fable 5.1"),
+            ModelChoice("claude-sonnet-5-5", "Sonnet 5.5"), ModelChoice("claude-haiku-5-5", "Haiku 5.5"),
+        ),
+        thinking = listOf(
+            LevelChoice("low", "Low", "Quick and straightforward"), LevelChoice("medium", "Medium"), LevelChoice("high", "High"),
+            LevelChoice("xhigh", "Extra high"), LevelChoice("max", "Max", "May use many tokens; for the hardest tasks"),
+        ),
+        thinkingName = "Effort", live = true, note = "Claude Code keeps what you pick as its default for new sessions too.",
+    )
+    private val opusHigh = CurrentModel("anthropic/claude-opus-5-5", "Opus 5.5", "high")
+
+    /** A sheet's content where the sheet would be: at the bottom, over a dimmed screen. */
+    @Composable
+    private fun SheetFrame(content: @Composable () -> Unit) {
+        Box(Modifier.fillMaxSize().background(Ink.night)) {
+            Box(Modifier.fillMaxSize().background(androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.4f)))
+            Column(
+                Modifier.align(androidx.compose.ui.Alignment.BottomCenter).fillMaxWidth().fillMaxHeight(0.86f)
+                    .clip(RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)).background(Ink.pen),
+                horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
+            ) {
+                Box(Modifier.padding(top = 10.dp, bottom = 6.dp).width(36.dp).height(4.dp).clip(RoundedCornerShape(2.dp)).background(Ink.rule))
+                content()
+            }
+        }
+    }
+
+    @Test fun chatModelChip() = paparazzi.snapshot {
+        Frame { ChatScreen(null, modelChip = { ModelChip(opusHigh, dim = false, switching = false) {} }) }
+    }
+
+    @Test fun chatModelChipWorking() = paparazzi.snapshot {
+        Frame { ChatScreen(event("working", msg = "Running the tests"), modelChip = { ModelChip(opusHigh, dim = true, switching = false) {} }) }
+    }
+
+    @Test fun modelSheet() = paparazzi.snapshot {
+        HerdrTheme {
+            SheetFrame {
+                LiveModelSheetContent(
+                    "tego", tegoChoices, null, opusHigh, busy = null,
+                    model = "anthropic/claude-sonnet-5-5", thinking = "low", onModel = {}, onThinking = {}, onApply = { _, _ -> }, onCancel = {},
+                )
+            }
+        }
+    }
+
+    @Test fun modelSheetWorking() = paparazzi.snapshot {
+        HerdrTheme {
+            SheetFrame {
+                LiveModelSheetContent(
+                    "tego", tegoChoices, null, opusHigh, busy = "working",
+                    model = opusHigh.model, thinking = opusHigh.thinking, onModel = {}, onThinking = {}, onApply = { _, _ -> }, onCancel = {},
+                )
+            }
+        }
+    }
+
+    @Test fun modelSheetLoading() = paparazzi.snapshot {
+        HerdrTheme {
+            NoShimmer {
+                SheetFrame {
+                    LiveModelSheetContent(
+                        "Claude Code", null, null, CurrentModel("default", "Opus 5.5", "high"), busy = null,
+                        model = "default", thinking = "high", onModel = {}, onThinking = {}, onApply = { _, _ -> }, onCancel = {},
+                    )
+                }
+            }
+        }
+    }
+
+    @Test fun newTaskModels() = paparazzi.snapshot {
+        Frame {
+            NoShimmer {
+                NewTaskForm(
+                    host = "AKBARs-MacBook-Air.local", folders = folders, agents = taskAgents, loadProblem = null, onRetry = {},
+                    filter = "", onFilter = {}, picked = "$home/Code/projects/herdr-remote", onPick = {}, agent = "claude", onAgent = {},
+                    modelChoices = claudeChoices, model = "claude-sonnet-5-5", thinking = "high", onModels = {},
+                    prompt = "Run the tests", onPrompt = {}, busy = false, problem = null, onBack = {}, onStart = {},
+                )
+            }
+        }
+    }
+
+    @Test fun newTaskModelSheet() = paparazzi.snapshot {
+        HerdrTheme {
+            SheetFrame {
+                ModelSheetContent(
+                    title = "Claude Code's model", subtitle = "Kept for Claude Code's next tasks",
+                    choices = claudeChoices, loadProblem = null, model = "claude-sonnet-5-5", thinking = null,
+                    onModel = {}, onThinking = {}, allowDefault = true,
+                ) { DoneFooter {} }
+            }
+        }
     }
 
     @Test fun herdEmpty() = paparazzi.snapshot {

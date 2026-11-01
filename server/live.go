@@ -11,10 +11,7 @@ package main
 // conversation as it's being written: the last lines of that are live.
 
 import (
-	"context"
-	"encoding/json"
 	"strings"
-	"time"
 	"unicode/utf8"
 )
 
@@ -112,17 +109,4 @@ func liveTail(screen string) []string {
 		}
 	}
 	return out
-}
-
-// liveScreen reads the terminal's screen and returns its live lines.
-func (s *server) liveScreen(ctx context.Context, terminal string) []string {
-	out, err := run(ctx, 3*time.Second, s.hc, "read", "--json", terminal)
-	if err != nil {
-		return nil
-	}
-	var r struct{ Text string }
-	if json.Unmarshal(out, &r) != nil {
-		return nil
-	}
-	return liveTail(r.Text)
 }

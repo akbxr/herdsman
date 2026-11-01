@@ -26,6 +26,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -99,6 +100,28 @@ fun NewTaskScreen(api: Api, host: String, onBack: () -> Unit, onStarted: (String
     var prompt by rememberSaveable { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var problem by remember { mutableStateOf<String?>(null) }
+    // The model and level for the agent (Models.kt): null, its own default.
+    // Remembered per agent as they are picked.
+    var model by remember { mutableStateOf<String?>(null) }
+    var thinking by remember { mutableStateOf<String?>(null) }
+    var choices by remember { mutableStateOf<Map<String, ModelChoices>>(emptyMap()) }
+    var choicesProblem by remember { mutableStateOf<String?>(null) }
+    var modelSheet by remember { mutableStateOf(false) }
+
+    LaunchedEffect(api, agent, attempt) {
+        val id = agent ?: return@LaunchedEffect
+        model = pairing.taskModel(id)
+        thinking = pairing.taskThinking(id)
+        if (!takesModel(id)) return@LaunchedEffect
+        choicesProblem = null
+        val c = choices[id] ?: runCatching { api.models(id) }
+            .onSuccess { choices = choices + (id to it) }
+            .onFailure { choicesProblem = it.advice() }
+            .getOrNull() ?: return@LaunchedEffect
+        // What the agent no longer offers: its default again.
+        if (c.model(model) == null) model = null
+        if (c.level(thinking) == null) thinking = null
+    }
 
     LaunchedEffect(api, attempt) {
         loadProblem = null
@@ -117,6 +140,22 @@ fun NewTaskScreen(api: Api, host: String, onBack: () -> Unit, onStarted: (String
         }.onFailure { loadProblem = it.advice() }
     }
 
+    val agentId = agent
+    if (modelSheet && agentId != null) {
+        val name = agents?.firstOrNull { it.id == agentId }?.name ?: agentTitle(agentId)
+        fun keep(m: String?, t: String?) { model = m; thinking = t; pairing.setTaskModel(agentId, m, t) }
+        ModelSheet(onDismiss = { modelSheet = false }) {
+            ModelSheetContent(
+                title = "$name's model",
+                subtitle = "Kept for $name's next tasks",
+                choices = choices[agentId], loadProblem = choicesProblem,
+                model = model, thinking = thinking,
+                onModel = { keep(it, thinking) }, onThinking = { keep(model, it) },
+                allowDefault = true,
+            ) { DoneFooter { modelSheet = false } }
+        }
+    }
+
     NewTaskForm(
         host = host,
         folders = folders,
@@ -129,6 +168,10 @@ fun NewTaskScreen(api: Api, host: String, onBack: () -> Unit, onStarted: (String
         onPick = { picked = it; problem = null },
         agent = agent,
         onAgent = { agent = it },
+        modelChoices = agent?.let { choices[it] },
+        model = model,
+        thinking = thinking,
+        onModels = { modelSheet = true },
         prompt = prompt,
         onPrompt = { prompt = it },
         busy = busy,
@@ -141,7 +184,8 @@ fun NewTaskScreen(api: Api, host: String, onBack: () -> Unit, onStarted: (String
             busy = true
             problem = null
             scope.launch {
-                runCatching { api.startTask(cwd, id, prompt.trim()) }
+                val withModel = takesModel(id)
+                runCatching { api.startTask(cwd, id, prompt.trim(), model.takeIf { withModel }, thinking.takeIf { withModel }) }
                     .onSuccess { terminal -> pairing.lastAgent = id; onStarted(terminal) }
                     .onFailure { problem = it.advice() }
                 busy = false
@@ -165,6 +209,10 @@ fun NewTaskForm(
     onPick: (String?) -> Unit,
     agent: String?,
     onAgent: (String) -> Unit,
+    modelChoices: ModelChoices? = null,
+    model: String? = null,
+    thinking: String? = null,
+    onModels: () -> Unit = {},
     prompt: String,
     onPrompt: (String) -> Unit,
     busy: Boolean,
@@ -235,6 +283,19 @@ fun NewTaskForm(
                     )
                     else -> FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         agents.forEach { a -> AgentChip(a.name, selected = a.id == agent) { onAgent(a.id) } }
+                    }
+                }
+                if (takesModel(agent)) {
+                    Spacer(Modifier.height(10.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        PickerBox(
+                            "Model", modelChoices?.model(model)?.label ?: model ?: "Default",
+                            Modifier.weight(1.4f), onClick = onModels,
+                        )
+                        PickerBox(
+                            modelChoices?.thinkingName ?: "Thinking", modelChoices?.level(thinking)?.label ?: thinking ?: "Default",
+                            Modifier.weight(1f), onClick = onModels,
+                        )
                     }
                 }
 
@@ -373,5 +434,28 @@ private fun AgentChip(name: String, selected: Boolean, onClick: () -> Unit) {
         contentAlignment = Alignment.Center,
     ) {
         Text(name, style = Type.label.copy(fontSize = Type.body.fontSize), color = if (selected) Ink.night else Ink.text, maxLines = 1)
+    }
+}
+
+/** A choice shown as a field: what it is small, its value big; it opens a sheet. */
+@Composable
+private fun PickerBox(label: String, value: String, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    Row(
+        modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(Ink.pen)
+            .border(1.dp, Ink.rule, RoundedCornerShape(12.dp))
+            .clickable(role = Role.Button, onClickLabel = "Change the ${label.lowercase()}", onClick = onClick)
+            .padding(start = 14.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(label, style = Type.small, color = Ink.dust, maxLines = 1)
+            Text(
+                value, style = Type.label.copy(fontSize = Type.body.fontSize),
+                color = if (value == "Default") Ink.dust else Ink.text, maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Icon(Icons.Filled.KeyboardArrowDown, contentDescription = null, tint = Ink.dust, modifier = Modifier.size(20.dp))
     }
 }

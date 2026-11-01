@@ -379,9 +379,54 @@ fun AgentScreen(api: Api, terminal: String, agent: Agent?, appScope: CoroutineSc
         )
     }
 
+    // The model and thinking level (Models.kt): the chip on the Chat tab and
+    // its sheet. A switch shows at once, then the next poll says what took.
+    val chatAgent = chat?.agent
+    var modelSheet by remember(terminal) { mutableStateOf(false) }
+    var modelChoices by remember(terminal) { mutableStateOf<ModelChoices?>(null) }
+    var modelLoadProblem by remember(terminal) { mutableStateOf<String?>(null) }
+    var switchingTo by remember(terminal) { mutableStateOf<CurrentModel?>(null) }
+    val currentModel = switchingTo ?: chat?.current ?: CurrentModel()
+    val agentBusy = chat?.status?.state?.takeIf { it == "working" || it == "blocked" }
+    LaunchedEffect(modelSheet, chatAgent) {
+        if (!modelSheet || chatAgent == null || modelChoices?.agent == chatAgent) return@LaunchedEffect
+        modelLoadProblem = null
+        runCatching { api.models(chatAgent) }.onSuccess { modelChoices = it }.onFailure { modelLoadProblem = it.advice(link) }
+    }
+    if (modelSheet && chatAgent != null) {
+        val agentName = agent?.title ?: agentTitle(chatAgent)
+        LiveModelSheet(
+            agentName = agentName,
+            choices = modelChoices?.takeIf { it.agent == chatAgent },
+            loadProblem = modelLoadProblem,
+            current = currentModel,
+            busy = agentBusy,
+            onApply = { m, t ->
+                modelSheet = false
+                val was = currentModel
+                switchingTo = CurrentModel(
+                    m ?: was.model,
+                    m?.let { modelChoices?.model(it)?.label ?: it } ?: was.label,
+                    t ?: was.thinking,
+                )
+                problem = null
+                scope.launch {
+                    runCatching { api.switchModel(terminal, chatAgent, m, t) }
+                        .onSuccess { now -> chat = chat?.copy(current = now) }
+                        .onFailure { problem = it.advice() }
+                    switchingTo = null
+                }
+            },
+            onDismiss = { modelSheet = false },
+        )
+    }
+
     AgentContent(
         mode = mode,
         chatAvailable = chatAvailable,
+        modelChip = if (switchesLive(chatAgent)) {
+            { ModelChip(currentModel, dim = agentBusy != null || switchingTo != null, switching = switchingTo != null) { if (switchingTo == null) modelSheet = true } }
+        } else null,
         onMode = { userMode = it },
         suggestions = suggestions,
         onPickSuggestion = { i ->
@@ -542,6 +587,7 @@ fun AgentContent(
     onAddSnippet: () -> Unit = {},
     onEsc: () -> Unit = {},
     onSearch: (() -> Unit)? = null,     // the chat's search, from the heading while Chat shows
+    modelChip: (@Composable () -> Unit)? = null,  // the agent's model and thinking level, on the Chat tab (Models.kt)
     chatSlot: @Composable () -> Unit = {},
     changesSlot: @Composable () -> Unit = {},
     field: TextFieldValue? = null,                  // the box's text and cursor; null: message, cursor at its end
@@ -712,7 +758,7 @@ fun AgentContent(
         }
 
         // The chat's quick replies, or the terminal's key bar.
-        if (mode != "terminal") SnippetRow(snippets, onSnippet, onEditSnippet, onAddSnippet, onEsc)
+        if (mode != "terminal") SnippetRow(snippets, onSnippet, onEditSnippet, onAddSnippet, onEsc, leading = { if (mode == "chat") modelChip?.invoke() })
         else Row(
             Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp, vertical = 8.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp),

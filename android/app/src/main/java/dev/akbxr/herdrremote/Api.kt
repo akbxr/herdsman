@@ -226,10 +226,32 @@ class Api(val base: String, val token: String) {
         return (0 until a.length()).map { a.getJSONObject(it).let { o -> TaskAgent(o.optString("id"), o.optString("name")) } }
     }
 
-    /** Opens a tab in [cwd] running [agent] on [prompt]; returns its terminal. */
-    suspend fun startTask(cwd: String, agent: String, prompt: String): String =
-        call("/api/task", JSONObject().put("cwd", cwd).put("agent", agent).put("prompt", prompt), timeoutMs = 30_000)
+    /**
+     * Opens a tab in [cwd] running [agent] on [prompt], with a [model] and
+     * [thinking] level (null: the agent's own default); returns its terminal.
+     */
+    suspend fun startTask(cwd: String, agent: String, prompt: String, model: String? = null, thinking: String? = null): String {
+        val body = JSONObject().put("cwd", cwd).put("agent", agent).put("prompt", prompt)
+        if (model != null) body.put("model", model)
+        if (thinking != null) body.put("thinking", thinking)
+        return call("/api/task", body, timeoutMs = 30_000)
             .optString("terminal").ifBlank { throw ApiError("The Mac opened the tab but didn't say which terminal it is.") }
+    }
+
+    /** The models and thinking levels an agent offers (Models.kt). */
+    suspend fun models(agent: String): ModelChoices = ModelChoices.from(call("/api/models?agent=" + enc(agent), timeoutMs = 15_000))
+
+    /**
+     * Switches the running agent's model and/or thinking level with its own
+     * slash commands; refused while it works or waits for you. Returns what
+     * its screen says after.
+     */
+    suspend fun switchModel(terminal: String, agent: String, model: String?, thinking: String?): CurrentModel {
+        val body = JSONObject().put("terminal", terminal).put("agent", agent)
+        if (model != null) body.put("model", model)
+        if (thinking != null) body.put("thinking", thinking)
+        return CurrentModel.from(call("/api/session", body, timeoutMs = 60_000).optJSONObject("current"))
+    }
 
     suspend fun interrupt(terminal: String) {
         call("/api/interrupt", JSONObject().put("terminal", terminal), timeoutMs = 20_000)
@@ -392,6 +414,12 @@ class Pairing(context: Context) {
     var lastAgent: String
         get() = prefs.getString("last-agent", "") ?: ""
         set(v) = prefs.edit().putString("last-agent", v).apply()
+
+    /** The model and thinking level last picked for a new task with [agent] (NewTask.kt); null: its default. */
+    fun taskModel(agent: String): String? = prefs.getString("task-model-$agent", null)
+    fun taskThinking(agent: String): String? = prefs.getString("task-thinking-$agent", null)
+    fun setTaskModel(agent: String, model: String?, thinking: String?) =
+        prefs.edit().putString("task-model-$agent", model).putString("task-thinking-$agent", thinking).apply()
 
     /** "Not now" on the run-in-the-background hint: don't show it again. */
     var backgroundHintDismissed: Boolean

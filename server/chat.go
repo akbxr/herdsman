@@ -65,6 +65,7 @@ type chatResult struct {
 	Live    []string    `json:"live,omitempty"`   // while it works: what its screen shows being written (live.go)
 	Start   bool        `json:"start"`            // nothing older to come: the items begin the conversation (or the most read does)
 	Limit   int         `json:"limit"`            // the most items asked for
+	Current             // the model and thinking level it runs with now (models.go)
 }
 
 const (
@@ -146,8 +147,16 @@ func (s *server) chat(w http.ResponseWriter, r *http.Request) {
 		}
 		s.events.mu.Unlock()
 	}
-	if res.Status != nil && res.Status.State == "working" {
-		res.Live = s.liveScreen(r.Context(), t)
+	// The screen: what a working agent is writing, and the model and level
+	// tego and Claude Code show.
+	working := res.Status != nil && res.Status.State == "working"
+	if working || agent == "tego" || agent == "claude" {
+		if screen, err := s.screenText(r.Context(), t); err == nil {
+			if working {
+				res.Live = liveTail(screen)
+			}
+			res.Current = s.current(agent, fg.Argv, screen, path)
+		}
 	}
 	if path != "" {
 		st, err := os.Stat(path)
@@ -155,7 +164,8 @@ func (s *server) chat(w http.ResponseWriter, r *http.Request) {
 			res.Version = fmt.Sprintf("%d-%d-%d", st.Size(), st.ModTime().UnixNano(), limit)
 			if c, ok := cachedChat(path, limit, st); ok && r.URL.Query().Get("version") == res.Version {
 				writeJSON(w, map[string]any{"agent": agent, "source": path, "version": res.Version, "same": true,
-					"status": res.Status, "live": res.Live, "start": c.start, "limit": limit})
+					"status": res.Status, "live": res.Live, "start": c.start, "limit": limit,
+					"model": res.Model, "modelLabel": res.ModelLabel, "thinking": res.Thinking})
 				return
 			}
 			res.Items, res.Start, err = readChat(agent, path, st, limit)
@@ -197,29 +207,8 @@ type foregroundInfo struct {
 }
 
 func (s *server) foreground(r *http.Request, terminal string) (foregroundInfo, error) {
-	out, err := run(r.Context(), 5*time.Second, s.hc, "get", "--json", terminal)
-	if err != nil {
-		return foregroundInfo{}, err
-	}
-	var g struct {
-		Cwd        string
-		Foreground *foregroundInfo
-		Status     *struct{ App string }
-	}
-	if err := json.Unmarshal(out, &g); err != nil {
-		return foregroundInfo{}, err
-	}
-	fg := foregroundInfo{Cwd: g.Cwd}
-	if g.Foreground != nil {
-		fg = *g.Foreground
-		if fg.Cwd == "" {
-			fg.Cwd = g.Cwd
-		}
-	}
-	if fg.Name == "" && g.Status != nil {
-		fg.Name = g.Status.App // reported by the program itself
-	}
-	return fg, nil
+	now, err := s.terminalNow(r.Context(), terminal)
+	return now.fg, err
 }
 
 // agentOf names the agent a foreground program is.
