@@ -78,12 +78,15 @@ Build it (needs the Android SDK; Android Studio's JDK works):
 ```sh
 cd android
 export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
-./gradlew assembleDebug
+./gradlew assembleRelease
 ```
 
-The APK is `android/app/build/outputs/apk/debug/app-debug.apk`. Install it
-with `adb install app-debug.apk` (USB debugging on), or copy it to the phone
-and open it (allow installing from that app).
+The APK is `android/app/build/outputs/apk/release/app-release.apk`. Install it
+with `adb install -r app-release.apk` (USB debugging on), or copy it to the
+phone and open it (allow installing from that app). Use the release build: it
+is shrunk and optimised by R8 and carries Compose's baseline profiles, and
+scrolls several times smoother than the debug one. Both are signed with the
+debug key, so one installs over the other and keeps the pairing.
 
 Open **Herdr Remote** and pair:
 

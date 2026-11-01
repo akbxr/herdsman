@@ -213,28 +213,28 @@ fun ChatView(
     }
     val keys = remember(items) { chatKeys(items) }
     Box(modifier) {
-        SelectionContainer(Modifier.fillMaxSize()) {
-            LazyColumn(
-                state = list,
-                // Loading older messages: room above the first item for the row that says so
-                // (padding, not an item: the list keeps its place by the first item's key).
-                contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = if (loadingOlder && hasOlder) 110.dp else 12.dp, bottom = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-                modifier = Modifier.fillMaxSize(),
-            ) {
-                if (showStart) item(key = "start") { NoteLine("The start of the conversation") }
-                itemsIndexed(items, key = { i, _ -> keys[i] }) { i, it ->
-                    val marks = search?.marks(i)
-                    when (it.kind) {
-                        "user" -> UserBubble(it.text, images = it.images, marks = marks)
-                        "assistant" -> Markdown(it.text, marks = marks)
-                        "tools" -> ToolRun(it.tools, running = running && i == items.lastIndex, marks = marks)
-                        else -> NoteLine(it.text)
-                    }
+        LazyColumn(
+            state = list,
+            // Loading older messages: room above the first item for the row that says so
+            // (padding, not an item: the list keeps its place by the first item's key).
+            contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = if (loadingOlder && hasOlder) 110.dp else 12.dp, bottom = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            if (showStart) item(key = "start") { NoteLine("The start of the conversation") }
+            itemsIndexed(items, key = { i, _ -> keys[i] }, contentType = { _, it -> it.kind }) { i, it ->
+                val marks = search?.marks(i)
+                // Selection per message: one container around the whole list
+                // made every scroll frame track all the text in it.
+                when (it.kind) {
+                    "user" -> SelectionContainer { UserBubble(it.text, images = it.images, marks = marks) }
+                    "assistant" -> SelectionContainer { Markdown(it.text, marks = marks) }
+                    "tools" -> ToolRun(it.tools, running = running && i == items.lastIndex, marks = marks)
+                    else -> NoteLine(it.text)
                 }
-                itemsIndexed(pending, key = { i, _ -> "pending$i" }) { _, text -> UserBubble(text, sending = true) }
-                if (foot) item(key = "status") { StatusFoot(status!!, agentName, prompt, onAnswer, onOption, onOpenTerminal) }
             }
+            itemsIndexed(pending, key = { i, _ -> "pending$i" }, contentType = { _, _ -> "pending" }) { _, text -> UserBubble(text, sending = true) }
+            if (foot) item(key = "status") { StatusFoot(status!!, agentName, prompt, onAnswer, onOption, onOpenTerminal) }
         }
         // Over the list, not in it: the list keeps its place when the older items come in.
         if (loadingOlder && hasOlder) OlderLoading(Modifier.align(Alignment.TopCenter))
@@ -428,8 +428,10 @@ private fun OptionButton(text: String, highlighted: Boolean, onClick: () -> Unit
 fun Markdown(text: String, modifier: Modifier = Modifier, marks: Marks? = null) {
     Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         var occ = 0  // the matches of the search before this block, among the answer's
-        mdBlocks(text).forEach { b ->
-            val (shown, n) = marked(shownText(b), marks, occ)
+        // Parsed once per text: a poll that brings the same answer back costs nothing.
+        val blocks = remember(text) { mdBlocks(text).map { it to shownText(it) } }
+        blocks.forEach { (b, plain) ->
+            val (shown, n) = marked(plain, marks, occ)
             val reveal = revealIf(marks != null && marks.current in occ until occ + n, marks?.current ?: 0)
             occ += n
             when (b) {
@@ -467,11 +469,15 @@ fun Markdown(text: String, modifier: Modifier = Modifier, marks: Marks? = null) 
  */
 @Composable
 private fun MdTable(t: MdBlock.Table, marks: Marks?, first: Int, reveal: Modifier) {
-    val all = listOf(t.header) + t.rows
-    val natural = t.header.indices.map { col ->
-        val longest = all.maxOf { row -> inline(row.getOrElse(col) { "" }).text.length }
-        (longest * 7.4f + 22f).coerceIn(64f, 260f)
+    // Parsed once per table, not on every frame the chat redraws.
+    val cells = remember(t) { (listOf(t.header) + t.rows).map { row -> row.map { inline(it) } } }
+    val natural = remember(cells) {
+        t.header.indices.map { col ->
+            val longest = cells.maxOf { row -> row.getOrNull(col)?.text?.length ?: 0 }
+            (longest * 7.4f + 22f).coerceIn(64f, 260f)
+        }
     }
+    val all = cells
     var occ = first
     BoxWithConstraints(
         Modifier
@@ -488,7 +494,7 @@ private fun MdTable(t: MdBlock.Table, marks: Marks?, first: Int, reveal: Modifie
             all.forEachIndexed { r, row ->
                 Row(Modifier.background(if (r == 0) Ink.pen else Color.Transparent)) {
                     row.forEachIndexed { col, cell ->
-                        val (shown, n) = marked(inline(cell), marks, occ)
+                        val (shown, n) = marked(cell, marks, occ)
                         occ += n
                         Text(
                             shown,

@@ -19,8 +19,13 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
-            // Signed with the debug key so the APK installs without extra setup.
+            // The build to use: R8 shrinks and optimises the code (Compose in a
+            // debug build is several times slower, scrolling most of all).
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            // Signed with the debug key so the APK installs over the debug one,
+            // keeping the pairing, without extra setup.
             signingConfig = signingConfigs.getByName("debug")
         }
     }
@@ -36,6 +41,10 @@ android {
     }
 }
 
+composeCompiler {
+    stabilityConfigurationFile = project.layout.projectDirectory.file("compose-stability.conf")
+}
+
 dependencies {
     val bom = platform("androidx.compose:compose-bom:2024.09.00")
     implementation(bom)
@@ -45,6 +54,9 @@ dependencies {
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-core")
+    // Installs the baseline profiles Compose ships, so ART compiles the hot
+    // paths ahead of time instead of interpreting them on first scrolls.
+    implementation("androidx.profileinstaller:profileinstaller:1.3.1")
     // QR scanning through Google Play services: its own camera screen, so the
     // app needs no camera permission.
     implementation("com.google.android.gms:play-services-code-scanner:16.1.0")

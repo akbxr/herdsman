@@ -33,6 +33,13 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -205,8 +212,8 @@ val ChangedFile.isNew get() = status == "?" || status == "A"
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun FileCard(f: ChangedFile, onDiscard: ((ChangedFile) -> Unit)?) {
-    var open by rememberSaveable(f.path) { mutableStateOf(false) }
+internal fun FileCard(f: ChangedFile, onDiscard: ((ChangedFile) -> Unit)?, startOpen: Boolean = false) {
+    var open by rememberSaveable(f.path) { mutableStateOf(startOpen) }
     var menu by remember { mutableStateOf(false) }
     val canOpen = f.patch.isNotEmpty()
     Column(
@@ -270,9 +277,9 @@ private fun FileCard(f: ChangedFile, onDiscard: ((ChangedFile) -> Unit)?) {
             BoxWithConstraints(Modifier.fillMaxWidth().background(TermBg)) {
                 val card = maxWidth
                 Box(Modifier.horizontalScroll(rememberScrollState())) {
-                    Column(Modifier.width(IntrinsicSize.Max).widthIn(min = card).padding(vertical = 6.dp)) {
-                        val lines = f.patch.lines()
-                        lines.take(SHOWN_LINES).forEach { DiffLine(it) }
+                    Column(Modifier.widthIn(min = card).padding(vertical = 6.dp)) {
+                        val lines = remember(f.patch) { f.patch.lines() }
+                        DiffText(lines.take(SHOWN_LINES), card)
                         if (f.truncated || lines.size > SHOWN_LINES) {
                             Text("  … the rest is on the Mac", style = Type.small, color = Ink.dust, modifier = Modifier.padding(6.dp))
                         }
@@ -297,17 +304,51 @@ internal fun StatusBadge(status: String) {
     ) { Text(label, style = Type.label.copy(fontFamily = JetBrains, fontSize = 12.sp), color = color) }
 }
 
+/**
+ * A diff as one text (its lines coloured, the added and removed ones on a
+ * stripe drawn behind them): one layout for the whole diff rather than one
+ * Text per line, so a long diff opens and scrolls without stalling.
+ */
 @Composable
-private fun DiffLine(line: String) {
+private fun DiffText(lines: List<String>, minWidth: androidx.compose.ui.unit.Dp) {
     val style = Type.small.copy(fontFamily = JetBrains, fontSize = 11.5.sp, lineHeight = 16.sp)
-    when {
-        line.startsWith("@@") -> Text(line, style = style, color = Ink.blue.copy(alpha = 0.8f), softWrap = false,
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp))
-        line.startsWith("+") -> Text(line, style = style, color = Added, softWrap = false,
-            modifier = Modifier.fillMaxWidth().background(Added.copy(alpha = 0.10f)).padding(horizontal = 10.dp))
-        line.startsWith("-") -> Text(line, style = style, color = Removed, softWrap = false,
-            modifier = Modifier.fillMaxWidth().background(Removed.copy(alpha = 0.10f)).padding(horizontal = 10.dp))
-        line.startsWith("\\") -> Text(line, style = style, color = Ink.dust, softWrap = false, modifier = Modifier.padding(horizontal = 10.dp))
-        else -> Text(line, style = style, color = Ink.text.copy(alpha = 0.75f), softWrap = false, modifier = Modifier.padding(horizontal = 10.dp))
+    val text = remember(lines) {
+        buildAnnotatedString {
+            lines.forEachIndexed { i, line ->
+                val color = when {
+                    line.startsWith("@@") -> Ink.blue.copy(alpha = 0.8f)
+                    line.startsWith("+") -> Added
+                    line.startsWith("-") -> Removed
+                    line.startsWith("\\") -> Ink.dust
+                    else -> Ink.text.copy(alpha = 0.75f)
+                }
+                withStyle(SpanStyle(color = color)) { append(line) }
+                if (i < lines.lastIndex) append('\n')
+            }
+        }
     }
+    var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
+    val addedBg = Added.copy(alpha = 0.10f)
+    val removedBg = Removed.copy(alpha = 0.10f)
+    Text(
+        text,
+        style = style,
+        softWrap = false,
+        onTextLayout = { layout = it },
+        modifier = Modifier
+            .widthIn(min = minWidth)
+            .drawBehind {
+                val l = layout ?: return@drawBehind
+                for (i in 0 until minOf(l.lineCount, lines.size)) {
+                    val bg = when {
+                        lines[i].startsWith("+") -> addedBg
+                        lines[i].startsWith("-") -> removedBg
+                        else -> continue
+                    }
+                    val top = l.getLineTop(i)
+                    drawRect(bg, topLeft = Offset(0f, top), size = Size(size.width, l.getLineBottom(i) - top))
+                }
+            }
+            .padding(horizontal = 10.dp),
+    )
 }

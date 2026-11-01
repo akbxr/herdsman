@@ -152,7 +152,7 @@ private fun Picture(id: String, single: Boolean, onOpen: (String) -> Unit, modif
             contentAlignment = Alignment.Center,
         ) { Text("Picture not available", style = Type.small.copy(fontSize = 11.sp), color = Ink.dust) }
         // On its way: a shimmer the shape it will take (darker than the bubble it sits in).
-        else -> Box(modifier.size(w, h).clip(shape).background(shimmerBrush(Ink.night, Ink.rule)))
+        else -> Box(modifier.size(w, h).clip(shape).shimmerBackground(Ink.night, Ink.rule))
     }
 }
 

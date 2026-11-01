@@ -203,7 +203,7 @@ class Api(val base: String, val token: String) {
 
     suspend fun ping(): String = call("/api/ping").optString("host", "your Mac")
 
-    suspend fun herd(): Herd = Herd.from(call("/api/state"))
+    suspend fun herd(): Herd = call("/api/state").let { withContext(Dispatchers.Default) { Herd.from(it) } }
 
     /** This Mac first, then the machines added in Herdr (MachinesSheet). */
     suspend fun machines(): List<Machine> {
@@ -246,7 +246,9 @@ class Api(val base: String, val token: String) {
      */
     suspend fun chat(terminal: String, version: String = "", limit: Int = CHAT_PAGE): ChatLog {
         val q = "terminal=" + enc(terminal) + "&limit=$limit" + if (version.isNotEmpty()) "&version=" + enc(version) else ""
-        return ChatLog.from(call("/api/chat?$q", timeoutMs = 30_000), limit)
+        val o = call("/api/chat?$q", timeoutMs = 30_000)
+        // Off the main thread: a page of a long chat is a lot of JSON to walk.
+        return withContext(Dispatchers.Default) { ChatLog.from(o, limit) }
     }
 
     /** A picture of the chat, scaled down on the Mac to fit [maxSide] pixels (ChatImages.kt). */
@@ -295,7 +297,8 @@ class Api(val base: String, val token: String) {
     /** The git changes in the agent's folder (Changes.kt); files null when unchanged since version. */
     suspend fun changes(terminal: String, version: String = ""): Changes {
         val q = "terminal=" + enc(terminal) + if (version.isNotEmpty()) "&version=" + enc(version) else ""
-        return Changes.from(call("/api/changes?$q", timeoutMs = 20_000))
+        val o = call("/api/changes?$q", timeoutMs = 20_000)
+        return withContext(Dispatchers.Default) { Changes.from(o) }
     }
 
     /**

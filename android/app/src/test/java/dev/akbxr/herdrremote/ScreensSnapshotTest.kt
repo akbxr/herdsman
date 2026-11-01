@@ -196,6 +196,14 @@ class ScreensSnapshotTest {
         }
     }
 
+    @Test fun changesDiffOpen() = paparazzi.snapshot {
+        Frame {
+            Column(Modifier.padding(14.dp)) {
+                FileCard(changedFiles[0].copy(patch = changedFiles[0].patch + "\n+    const veryLongLineThatGoesPastTheEdgeOfThePhoneScreen = computeSomethingWide(a, b, c)\n\\ No newline at end of file"), null, startOpen = true)
+            }
+        }
+    }
+
     private val changedFiles = listOf(
         ChangedFile("src/login.tsx", "M", 3, 1, false, "@@ -38,7 +38,9 @@ export function Login() {\n   const [email, setEmail] = useState(\"\")\n-  if (error) resetForm()\n+  if (error) {\n+    setPassword(\"\")\n+  }\n   return (", false),
         ChangedFile("src/login.test.tsx", "?", 24, 0, false, "@@ -0,0 +1,24 @@\n+import { render } from \"@testing-library/react\"", false),
