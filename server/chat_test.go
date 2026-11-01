@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func lines(s string) [][]byte {
@@ -160,5 +161,39 @@ func TestCommandsFor(t *testing.T) {
 	}
 	if got := commandsFor("", proj); len(got) != 0 {
 		t.Errorf("a shell: %v", got)
+	}
+}
+
+func TestClaudeSession(t *testing.T) {
+	home := t.TempDir()
+	os.MkdirAll(filepath.Join(home, ".claude", "sessions"), 0o755)
+	os.WriteFile(filepath.Join(home, ".claude", "sessions", "4242.json"), []byte(`{"pid":4242,"sessionId":"abc-123","cwd":"/Users/x/p"}`), 0o644)
+	want := filepath.Join(home, ".claude", "projects", "-Users-x-p", "abc-123.jsonl")
+	if got := claudeSession(home, 4242); got != want {
+		t.Errorf("got %q, want %q (even before the file exists: a new session)", got, want)
+	}
+	if got := claudeSession(home, 1); got != "" {
+		t.Errorf("no session file: %q", got)
+	}
+	os.WriteFile(filepath.Join(home, ".claude", "sessions", "7.json"), []byte(`{"sessionId":"../../etc/x","cwd":"/p"}`), 0o644)
+	if got := claudeSession(home, 7); got != "" {
+		t.Errorf("a path for a session id: %q", got)
+	}
+}
+
+func TestNewestSince(t *testing.T) {
+	dir := t.TempDir()
+	old := filepath.Join(dir, "old.jsonl")
+	os.WriteFile(old, []byte("{}\n"), 0o644)
+	past := time.Now().Add(-time.Hour)
+	os.Chtimes(old, past, past)
+	if got := newestSince(dir, ".jsonl", time.Now()); got != "" {
+		t.Errorf("an older session's file counted as the new program's: %q", got)
+	}
+	if got := newestSince(dir, ".jsonl", time.Time{}); got != old {
+		t.Errorf("no start known: %q", got)
+	}
+	if got := newestSince(dir, ".jsonl", past.Add(-time.Minute)); got != old {
+		t.Errorf("written since the start: %q", got)
 	}
 }

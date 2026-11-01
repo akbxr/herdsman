@@ -6,8 +6,14 @@ package main
 //
 // Known agents and where they write:
 //   tego         ~/.tego/sessions/<cwd>/<id>.jsonl, held open while it runs (lsof finds it)
-//   Claude Code  ~/.claude/projects/<cwd, non-alphanumerics as ->/<uuid>.jsonl, the newest
+//   Claude Code  ~/.claude/projects/<cwd, non-alphanumerics as ->/<session>.jsonl, the session
+//                named in ~/.claude/sessions/<pid>.json
 //   Codex        ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl, the newest for the cwd
+//
+// A session that has said nothing yet has no transcript: then the chat is
+// empty, never an older session's from the same folder. (Where the agent
+// doesn't say which file is its own, only files written since the program
+// started count.)
 //
 // Transcripts grow to tens of MB: only the tail is read, and a parse is kept
 // until the file changes.
@@ -159,16 +165,20 @@ func agentOf(fg foregroundInfo) string {
 func findTranscript(fg foregroundInfo) (agent, path string) {
 	agent = agentOf(fg)
 	home, _ := os.UserHomeDir()
+	started := procStart(fg.Pid)
 	switch agent {
 	case "tego":
 		if p := openFile(fg.Pid, filepath.Join(home, ".tego", "sessions")); p != "" {
 			return agent, p
 		}
-		return agent, newest(filepath.Join(home, ".tego", "sessions", tegoSlug(fg.Cwd)), ".jsonl")
+		return agent, newestSince(filepath.Join(home, ".tego", "sessions", tegoSlug(fg.Cwd)), ".jsonl", started)
 	case "claude":
-		return agent, newest(filepath.Join(home, ".claude", "projects", claudeSlug(fg.Cwd)), ".jsonl")
+		if p := claudeSession(home, fg.Pid); p != "" {
+			return agent, p
+		}
+		return agent, newestSince(filepath.Join(home, ".claude", "projects", claudeSlug(fg.Cwd)), ".jsonl", started)
 	case "codex":
-		return agent, newestCodex(filepath.Join(home, ".codex", "sessions"), fg.Cwd)
+		return agent, newestCodex(filepath.Join(home, ".codex", "sessions"), fg.Cwd, started)
 	}
 	return agent, ""
 }
@@ -188,6 +198,53 @@ func openFile(pid int, dir string) string {
 		}
 	}
 	return ""
+}
+
+// claudeSession: the transcript of the session Claude Code runs in that
+// process, from the file it keeps per process (it names the session, and
+// follows /clear and /resume). It may not exist yet: nothing said.
+func claudeSession(home string, pid int) string {
+	if pid <= 0 {
+		return ""
+	}
+	b, err := os.ReadFile(filepath.Join(home, ".claude", "sessions", fmt.Sprintf("%d.json", pid)))
+	if err != nil {
+		return ""
+	}
+	var s struct{ SessionID, Cwd string }
+	if json.Unmarshal(b, &s) != nil || s.SessionID == "" || strings.ContainsAny(s.SessionID, "/\\") {
+		return ""
+	}
+	return filepath.Join(home, ".claude", "projects", claudeSlug(s.Cwd), s.SessionID+".jsonl")
+}
+
+// procStart: when a process started; zero when unknown.
+func procStart(pid int) time.Time {
+	if pid <= 0 {
+		return time.Time{}
+	}
+	out, err := exec.Command("ps", "-o", "lstart=", "-p", fmt.Sprint(pid)).Output()
+	if err != nil {
+		return time.Time{}
+	}
+	t, err := time.ParseInLocation("Mon Jan _2 15:04:05 2006", strings.TrimSpace(string(out)), time.Local)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
+}
+
+// newestSince: the newest file written since the program started (a few
+// seconds' slack); with no start known, the newest.
+func newestSince(dir, ext string, started time.Time) string {
+	p := newest(dir, ext)
+	if p == "" || started.IsZero() {
+		return p
+	}
+	if st, err := os.Stat(p); err != nil || st.ModTime().Before(started.Add(-3*time.Second)) {
+		return ""
+	}
+	return p
 }
 
 func newest(dir, ext string) string {
@@ -233,7 +290,7 @@ func claudeSlug(cwd string) string {
 }
 
 // The newest Codex rollout, of the last week, whose session began in cwd.
-func newestCodex(root, cwd string) string {
+func newestCodex(root, cwd string, started time.Time) string {
 	var files []string
 	for d := 0; d < 7; d++ {
 		day := time.Now().AddDate(0, 0, -d)
@@ -254,6 +311,9 @@ func newestCodex(root, cwd string) string {
 		}
 		json.Unmarshal(line, &meta)
 		if meta.Payload.Cwd == cwd || meta.Cwd == cwd {
+			if st, err := os.Stat(f); err == nil && !started.IsZero() && st.ModTime().Before(started.Add(-3*time.Second)) {
+				return "" // the newest for this folder is older than the program: not its own
+			}
 			return f
 		}
 	}

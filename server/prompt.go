@@ -137,14 +137,20 @@ func parsePrompt(screen string) *prompt {
 		for j := first; j <= last; j++ {
 			p.Options = append(p.Options, optionText(lines[j], col))
 		}
-		// The question: the closest text above, past an input line ("› ").
-		for j := first - 1; j >= 0 && j >= first-4; j-- {
+		// The question: the closest line above that asks something ("?"),
+		// else the closest text, past an input line ("› ") and rules.
+		for j := first - 1; j >= 0 && j >= first-8; j-- {
 			t := strings.TrimSpace(lines[j])
 			if t == "" || isInputLine(t) || strings.Trim(t, "─━═-╭╮╰╯┌┐└┘ ") == "" {
 				continue
 			}
-			p.Question = t
-			break
+			if p.Question == "" {
+				p.Question = t
+			}
+			if strings.Contains(t, "?") {
+				p.Question = t
+				break
+			}
 		}
 		return p
 	}

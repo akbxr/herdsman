@@ -47,7 +47,17 @@ Allow bash: go test ./...?
   3. No, and tell Codex what to do differently (esc)
 
   Press enter to confirm or esc to cancel
-`, &prompt{Question: "$ cargo build", Options: []string{"Yes, proceed (y)", "Yes, and don't ask again for this command (a)", "No, and tell Codex what to do differently (esc)"}, Selected: 0}},
+`, &prompt{Question: "Would you like to run the following command?", Options: []string{"Yes, proceed (y)", "Yes, and don't ask again for this command (a)", "No, and tell Codex what to do differently (esc)"}, Selected: 0}},
+		{"claude trust", `
+ Accessing workspace:
+ /private/tmp/cc-test
+ Quick safety check: Is this a project you created or one you trust? (Like your own code)
+ Claude Code'll be able to read, edit, and execute files here.
+ Security guide
+ ❯ No, exit
+   Yes, I trust this folder
+ Enter to confirm · Esc to cancel
+`, &prompt{Question: "Quick safety check: Is this a project you created or one you trust? (Like your own code)", Options: []string{"No, exit", "Yes, I trust this folder"}, Selected: 0}},
 		{"no menu: a quote and a prompt line", `
 > a quoted line
 plain text

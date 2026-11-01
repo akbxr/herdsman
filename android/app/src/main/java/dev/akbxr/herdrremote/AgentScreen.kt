@@ -131,21 +131,43 @@ fun AgentScreen(api: Api, terminal: String, agent: Agent?, appScope: CoroutineSc
     var chatTried by remember(terminal) { mutableStateOf(false) }
     var chatProblem by remember(terminal) { mutableStateOf<String?>(null) }
     var userMode by rememberSaveable(terminal) { mutableStateOf<String?>(null) }
+    // An agent runs in it (even one that has said nothing yet): it has a chat.
+    val chatAvailable = chat?.agent?.isNotEmpty() == true
     val mode = userMode ?: when {
-        chat?.source?.isNotEmpty() == true -> "chat"
+        chatAvailable -> "chat"
         chatTried -> "terminal"
         else -> "loading"
+    }
+    // Another program in the terminal (claude typed in a shell, or the agent
+    // quit back to it): the view follows, Chat for an agent, Terminal for a shell.
+    var lastAgent by remember(terminal) { mutableStateOf<String?>(null) }
+    LaunchedEffect(chat?.agent) {
+        val a = chat?.agent ?: return@LaunchedEffect
+        if (lastAgent != null && lastAgent != a) userMode = null
+        lastAgent = a
     }
     LaunchedEffect(terminal, onScreen, mode) {
         if (!onScreen) return@LaunchedEffect
         while (true) {
             runCatching { api.chat(terminal, chat?.version.orEmpty()) }
-                .onSuccess { c -> c.items?.let { chatItems = it }; chat = c; chatProblem = null }
+                .onSuccess { c ->
+                    // Another session (a new one, /clear, /resume): its own items, none of the last one's.
+                    if (c.source != chat?.source) chatItems = emptyList()
+                    c.items?.let { chatItems = it }
+                    chat = c
+                    chatProblem = null
+                }
                 .onFailure { if (mode == "chat") chatProblem = it.advice(link) }
             chatTried = true
-            if (mode != "chat") break
-            // Closer while it works: each tool call shows as it starts.
-            delay(if (chat?.status?.state == "working") 900 else 2000)
+            // On the chat, closer while it works: each tool call shows as it
+            // starts. Elsewhere, slowly: only to notice an agent starting.
+            delay(
+                when {
+                    mode != "chat" -> 3000
+                    chat?.status?.state == "working" -> 900
+                    else -> 2000
+                },
+            )
         }
     }
 
@@ -291,7 +313,7 @@ fun AgentScreen(api: Api, terminal: String, agent: Agent?, appScope: CoroutineSc
 
     AgentContent(
         mode = mode,
-        chatAvailable = chat?.source?.isNotEmpty() == true,
+        chatAvailable = chatAvailable,
         onMode = { userMode = it },
         suggestions = suggestions,
         onPickSuggestion = { i ->
