@@ -1,6 +1,12 @@
 package dev.akbxr.herdrremote
 
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.RectF
 import androidx.compose.foundation.background
+import androidx.compose.runtime.CompositionLocalProvider
+import kotlinx.coroutines.awaitCancellation
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -246,6 +252,79 @@ class ScreensSnapshotTest {
                     Attachment(3, uri, "crash.log", 9_800, "text/plain", error = "Can't reach your Mac."),
                 ),
             )
+        }
+    }
+
+    // Pictures in your messages: drawn here (no network in snapshots).
+    private fun fakeShot(w: Int, h: Int, accent: Int): Bitmap {
+        val b = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val c = Canvas(b)
+        val p = Paint().apply { isAntiAlias = true }
+        p.color = 0xFF1A1B26.toInt(); c.drawRect(0f, 0f, w.toFloat(), h.toFloat(), p)
+        p.color = 0xFF24283B.toInt(); c.drawRect(0f, 0f, w.toFloat(), h * 0.09f, p)
+        for (i in 0 until 9) {
+            p.color = if (i % 3 == 0) accent else 0xFF565F89.toInt()
+            val top = h * (0.16f + i * 0.085f)
+            c.drawRoundRect(RectF(w * 0.07f, top, w * (0.35f + (i * 37 % 50) / 100f), top + h * 0.035f), 6f, 6f, p)
+        }
+        return b
+    }
+
+    private val fakeImages = object : ChatImages {
+        val shots = mapOf(
+            "shot" to fakeShot(640, 400, 0xFF7AA2F7.toInt()),
+            "phone1" to fakeShot(288, 640, 0xFFE0AF68.toInt()),
+            "phone2" to fakeShot(288, 640, 0xFF9ECE6A.toInt()),
+        )
+        override fun cached(id: String, px: Int) = shots[id]
+        override suspend fun load(id: String, px: Int): Bitmap? = shots[id] ?: awaitCancellation()  // others: still loading
+    }
+
+    @Composable
+    private fun ChatWith(content: @Composable () -> Unit) {
+        AgentContent(
+            mode = "chat", chatAvailable = true, snippets = Snippets.DEFAULT, onSearch = {},
+            chatSlot = { CompositionLocalProvider(LocalChatImages provides fakeImages) { content() } },
+            terminal = "t12", agent = herd.agents[0], status = TermStatus(), ctrl = false, problem = null,
+            message = "", onMessage = {}, attachments = emptyList(), sending = false, refused = false,
+            onBack = {}, onMore = {}, onAttach = {}, onRemove = {}, onSend = {}, onKey = {},
+        ) {}
+    }
+
+    @Test fun chatImages() = paparazzi.snapshot {
+        Frame {
+            ChatWith {
+                ChatView(
+                    listOf(
+                        ChatItem("user", "the login form loses the email after a failed attempt", images = listOf("shot"), id = "u1"),
+                        ChatItem("assistant", "I see it: the email field is empty after the error banner.", id = "a1"),
+                        ChatItem("user", "and this is how it looks on the phone", images = listOf("phone1", "phone2"), id = "u2"),
+                        ChatItem("assistant", "Both screens reset the form. Fixing `resetForm()`.", id = "a2"),
+                        ChatItem("user", images = listOf("loading"), id = "u3"),
+                    ),
+                    null, "tego", onAnswer = {}, onOpenTerminal = {},
+                )
+            }
+        }
+    }
+
+    @Test fun chatSearch() = paparazzi.snapshot {
+        val hits = findHits(chatItems, "login")
+        Frame {
+            ChatWith {
+                Column(Modifier.fillMaxSize()) {
+                    ChatSearchBar("login", {}, count = hits.size, current = 1, loading = false, onOlder = {}, onNewer = {}, onClose = {}, autofocus = false)
+                    ChatView(chatItems, null, "tego", modifier = Modifier.weight(1f), search = ChatSearch("login", hits, 1), onAnswer = {}, onOpenTerminal = {})
+                }
+            }
+        }
+    }
+
+    @Test fun chatLoadingOlder() = paparazzi.snapshot {
+        Frame {
+            ChatWith {
+                ChatView(chatItems, null, "tego", hasOlder = true, loadingOlder = true, onAnswer = {}, onOpenTerminal = {})
+            }
         }
     }
 

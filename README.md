@@ -110,6 +110,12 @@ The phone needs Tailscale on too, signed in to the same account.
   screen ("Yes", "Yes, and don't ask again", "No…") are buttons; the Mac
   reads the menu again before pressing ↑/↓ and Enter, and types nothing if it
   changed.
+
+  It opens on the last 120 messages; scroll to the top for older ones, back
+  to the start of the conversation. The search in the heading looks through
+  all of it: matches marked, ↑/↓ and "3 of 12" go from one to the next.
+  Pictures in your messages (pasted screenshots, photos attached from the
+  phone) show in your bubble; tap one to see it whole and pinch to zoom.
 - **Changes**: what is uncommitted in the agent's folder (git, against the
   last commit, new files included): each file with +/− counts, tap for its
   diff. Works for tego, Claude Code and Codex (a shell
@@ -176,7 +182,8 @@ All under `/api`, with `Authorization: Bearer <token>` (except `/pair`):
 | POST | `/upload?terminal=t12&name=x.png` | body = the file; `hc put` places it beside the terminal → `{path, bytes}` |
 | GET | `/events?after=41&wait=25` | long poll for agents' status changes → `{seq, events}`; without `after`: `{seq, current}` |
 | POST | `/answer` | `{terminal, seq, answer: allow\|deny\|reply\|option, text?, option?}`: answers a waiting agent; 409 when the prompt is gone |
-| GET | `/chat?terminal=t12&version=` | the agent's conversation from its transcript → `{agent, source, version, items, status}`; `same: true` when unchanged |
+| GET | `/chat?terminal=t12&version=&limit=120` | the last `limit` items of the agent's conversation from its transcript → `{agent, source, version, items, status, live, start, limit}`; `start: true` when nothing older is left; `same: true` when unchanged (the version includes the limit). Items carry a stable `id` and, for your messages, picture ids in `images` |
+| GET | `/image?id=&w=480` | a picture of the chat by id (an image block's bytes, or an image file named in a message), scaled to fit `w` pixels when given |
 | GET | `/prompt?terminal=t12` | the menu on the terminal's screen → `{prompt: {question, options, selected}}` or `null` |
 | GET | `/changes?terminal=t12&version=` | uncommitted git changes in the agent's folder: files with status, counts and patch |
 | GET | `/commands?terminal=t12` | the agent's slash commands, custom commands and skills |
