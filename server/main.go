@@ -49,6 +49,8 @@ type server struct {
 	home         string                 // where recent folders and projects are looked for
 	programsFile string                 // Herdr's programs.json
 	hasTool      func(name string) bool // whether a program is installed
+	// The transcript the agent in a terminal has open (sessions.go).
+	transcriptOf func(ctx context.Context, terminal string) string
 }
 
 func usage() {
@@ -169,6 +171,8 @@ func main() {
 	mux.HandleFunc("GET /api/folders", s.auth(s.folders))      // where a new task can start
 	mux.HandleFunc("GET /api/agents", s.auth(s.agentsHandler)) // what a new task can run
 	mux.HandleFunc("POST /api/task", s.auth(s.task))           // a new tab running an agent on a task
+	mux.HandleFunc("GET /api/sessions", s.auth(s.sessions))    // earlier sessions an agent can resume
+	mux.HandleFunc("POST /api/resume", s.auth(s.resume))       // a new tab resuming one
 	mux.HandleFunc("GET /api/models", s.auth(s.modelsHandler)) // the models and thinking levels an agent offers
 	mux.HandleFunc("POST /api/session", s.auth(s.session))     // switch a running agent's model or thinking level
 

@@ -157,6 +157,15 @@ The phone needs Tailscale on too, signed in to the same account.
   (tego), `--model`/`--effort` (Claude Code) or `-m`/`-c
   model_reasoning_effort=` (Codex); "Default" leaves the agent's own. The
   phone remembers the last pick per agent.
+- **Resume**: pick up an earlier tego or Claude Code conversation in a new
+  tab, in the folder it was in (`tego --resume <id>`, `claude --resume
+  <id>`), and open it on the phone. Once a folder is picked, New task lists
+  **Earlier sessions here** above the agents; **Resume a session** (**New**
+  on the herd) lists the recent ones anywhere. Each shows its title (the
+  agent's own, else your first message), agent, when, and how many messages
+  you wrote. Sessions with nothing said are left out; one running in a
+  terminal now says so and opens that terminal instead of resuming it twice.
+  Codex isn't offered: the Codex installed (0.29) has no resume command.
 - **Terminal**: the terminal itself, live (`hc attach` over a
   WebSocket, drawn by xterm.js with the Mac's Tokyo Night colors and Nerd
   Font icons). Tap it to type: the phone's keyboard goes straight to the
@@ -224,6 +233,8 @@ All under `/api`, with `Authorization: Bearer <token>` (except `/pair`):
 | GET | `/folders` | where a new task can start: `{home, recent, projects}` |
 | GET | `/agents` | the agents installed on the Mac |
 | POST | `/task` | `{cwd, agent, prompt, model?, thinking?}`: a new tab running the agent; model and thinking become its start flags, checked against `/models` → `{terminal, tab, prompt}` |
+| GET | `/sessions?cwd=&agent=&limit=50` | sessions tego and Claude Code can resume, newest first, in `cwd` or anywhere (not temporary or deleted folders) → `{home, sessions: [{agent, id, title, cwd, time, messages, estimate, size, running}], partial}`; `running`: the terminal it runs in now; `estimate`: `messages` is a lower bound, not counted to the end yet; `partial`: the scan ran out of time. Reads the start and end of each transcript, keeps what it read until the file changes |
+| POST | `/resume` | `{agent, id, model?, thinking?}`: a new tab in the session's folder running `tego --resume <id>` / `claude --resume <id>` → `{terminal, tab, space, agent, id, cwd}`; 404 for an unknown session, 400 for a malformed id or an empty session, 409 when its folder is gone or it runs already (`terminal` names it) |
 | GET | `/models?agent=tego\|claude\|codex` | `{agent, models: [{id, label, group}], thinking: [{id, label, detail}], thinkingName, live, note}` (kept a minute) |
 | POST | `/session` | `{terminal, agent?, model?, thinking?}`: switches a running tego or Claude Code with its own slash commands → `{agent, sent, current}`; 409 while it works or waits for you, or when the terminal no longer runs `agent`; 400 for a model or level it doesn't offer |
 

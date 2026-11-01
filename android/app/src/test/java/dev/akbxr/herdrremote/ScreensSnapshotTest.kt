@@ -414,15 +414,80 @@ class ScreensSnapshotTest {
     private fun NewTask(
         picked: String? = null, filter: String = "", prompt: String = "", busy: Boolean = false, problem: String? = null,
         folders: TaskFolders? = this.folders, agents: List<TaskAgent>? = taskAgents,
+        sessions: List<EarlierSession>? = null, resuming: String? = null, resumeProblem: String? = null,
     ) = NoShimmer {
         NewTaskForm(
             host = "AKBARs-MacBook-Air.local", folders = folders, agents = agents, loadProblem = null, onRetry = {},
             filter = filter, onFilter = {}, picked = picked, onPick = {}, agent = "claude", onAgent = {},
-            prompt = prompt, onPrompt = {}, busy = busy, problem = problem, onBack = {}, onStart = {},
+            prompt = prompt, onPrompt = {}, busy = busy, problem = problem,
+            sessions = sessions, resuming = resuming, resumeProblem = resumeProblem, now = now,
+            onBack = {}, onStart = {},
         )
     }
 
     @Test fun newTaskFolders() = paparazzi.snapshot { Frame { NewTask() } }
+
+    // Earlier sessions (Sessions.kt): times relative to a fixed now.
+    private val now = 1_793_500_000_000L // 2026-11-01, late morning
+    private fun ago(min: Long) = now - min * 60_000
+    private val herdrRemote = "$home/Code/projects/herdr-remote"
+    private val sessionsHere = listOf(
+        EarlierSession("tego", "20261101-093000-a1b2c3", "Resume earlier sessions from the phone", herdrRemote, ago(4), 12, running = "t7"),
+        EarlierSession("claude", "78759a30-f50b-498a-9f99-8c319953813a", "Login screen forgets the address after a restart", herdrRemote, ago(150), 6),
+        EarlierSession("tego", "20261031-201500-0a0b0c", "Answer permission prompts from the notification", herdrRemote, ago(60 * 20), 31),
+        EarlierSession("tego", "20261029-101500-0d0e0f", "Paparazzi snapshots for the chat screen", herdrRemote, ago(60 * 24 * 3), 140, atLeast = true),
+        EarlierSession("claude", "f0d71145-8209-4082-96b6-c9647e912c20", "Tailscale address in the pairing link", herdrRemote, ago(60 * 24 * 12), 2),
+    )
+    private val sessionsAnywhere = EarlierSessions(
+        home,
+        listOf(
+            EarlierSession("tego", "20261030-060455-b94bfe", "Riset herdr-core dan status agen", home, ago(1), 60, running = "t12"),
+            sessionsHere[1],
+            EarlierSession("tego", "20261031-142036-ea0071", "Skill pembuat video otomatis Blender Remotion", "$home/Code/projects/3d-video/gen3", ago(60 * 19), 11),
+            EarlierSession("tego", "20261013-140115-07dbc3", "Mencari papers implementasi untuk Tego", "$home/Code/projects/tego", ago(60 * 24 + 90), 267),
+            EarlierSession("claude", "619ad0d4-7f61-4d19-92b0-6f1d0e5c6a11", "Project tego dan kudu", "$home/Code/projects/kudu", ago(60 * 24 * 4), 1),
+            EarlierSession("tego", "20261020-003859-0e480c", "Ide T3 Code dengan GPUI", "$home/Code/projects/kudu", ago(60 * 24 * 12), 14),
+            EarlierSession(
+                "tego", "20261012-181901-a56268", "Redesign dashboard billing keys modern interface, with a much longer title that wraps",
+                "$home/Code/projects/unli.dev", ago(60 * 24 * 20), 136,
+            ),
+        ),
+    )
+
+    @Test fun newTaskSessions() = paparazzi.snapshot {
+        Frame { NewTask(picked = herdrRemote, sessions = sessionsHere) }
+    }
+
+    @Test fun newTaskSessionResuming() = paparazzi.snapshot {
+        Frame { NewTask(picked = herdrRemote, sessions = sessionsHere.take(3), resuming = sessionsHere[1].id) }
+    }
+
+    @Test fun newTaskSessionProblem() = paparazzi.snapshot {
+        Frame {
+            NewTask(
+                picked = herdrRemote, sessions = sessionsHere.drop(1).take(2),
+                resumeProblem = "the session's folder /Users/akbar/Code/old is gone from the Mac",
+            )
+        }
+    }
+
+    @Composable
+    private fun Sessions(sessions: EarlierSessions?, resuming: String? = null, problem: String? = null, loadProblem: String? = null) = NoShimmer {
+        SessionsList(
+            host = "AKBARs-MacBook-Air.local", sessions = sessions, now = now, loadProblem = loadProblem, onRetry = {},
+            resuming = resuming, problem = problem, onBack = {}, onSession = {},
+        )
+    }
+
+    @Test fun sessions() = paparazzi.snapshot { Frame { Sessions(sessionsAnywhere) } }
+
+    @Test fun sessionsLoading() = paparazzi.snapshot { Frame { Sessions(null) } }
+
+    @Test fun sessionsEmpty() = paparazzi.snapshot { Frame { Sessions(EarlierSessions(home, emptyList())) } }
+
+    @Test fun sessionsProblem() = paparazzi.snapshot {
+        Frame { Sessions(sessionsAnywhere, problem = "the session's folder /Users/akbar/Code/old is gone from the Mac") }
+    }
 
     @Test fun newTaskFoldersLoading() = paparazzi.snapshot { Frame { NewTask(folders = null, agents = null) } }
 

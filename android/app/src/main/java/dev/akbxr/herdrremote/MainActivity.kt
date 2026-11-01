@@ -70,6 +70,7 @@ private fun App(link: String?, onLinkUsed: () -> Unit, openFromNotification: Str
     val scope = rememberCoroutineScope()  // outlives sheets and screens: commands to the Mac finish
     var openTerminal by rememberSaveable { mutableStateOf<String?>(null) }
     var newTask by rememberSaveable { mutableStateOf(false) }
+    var resumeList by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(openFromNotification) {
         openFromNotification?.let { openTerminal = it; section = Section.Herd; onOpened() }
     }
@@ -110,6 +111,7 @@ private fun App(link: String?, onLinkUsed: () -> Unit, openFromNotification: Str
                     herd = null
                     openTerminal = null
                     newTask = false
+                    resumeList = false
                     api = Api(info.address, info.token)
                 },
                 onKeepCurrent = if (a != null) onLinkUsed else null,
@@ -134,6 +136,16 @@ private fun App(link: String?, onLinkUsed: () -> Unit, openFromNotification: Str
             return@Box
         }
 
+        if (resumeList) {
+            BackHandler { resumeList = false }
+            SessionsScreen(
+                api = a, host = host,
+                onBack = { resumeList = false },
+                onTerminal = { t -> resumeList = false; section = Section.Herd; openTerminal = t },
+            )
+            return@Box
+        }
+
         var newMenu by remember { mutableStateOf(false) }
         var newTab by remember { mutableStateOf(false) }
         var actionsFor by remember { mutableStateOf<Agent?>(null) }
@@ -150,6 +162,7 @@ private fun App(link: String?, onLinkUsed: () -> Unit, openFromNotification: Str
             onDismiss = { newMenu = false },
             actions = listOf(
                 SheetAction("New task", "An agent in a folder you pick, on what you ask; opens here") { newMenu = false; newTask = true },
+                SheetAction("Resume a session", "Pick up an earlier tego or Claude Code conversation in a new tab") { newMenu = false; resumeList = true },
                 SheetAction("New tab", "A shell or a program, in the folder of the terminal focused on the Mac") { newMenu = false; newTab = true },
             ),
         )
