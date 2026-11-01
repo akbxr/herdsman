@@ -1,4 +1,4 @@
-// herdr-remote serves a small HTTP API that lets a phone drive the Herdr
+// herdsman serves a small HTTP API that lets a phone drive the Herdr
 // app on this Mac. It runs the herdr-app and hc command-line tools (never a
 // shell) and needs a bearer token on every /api request.
 //
@@ -45,7 +45,7 @@ type server struct {
 	hc        string     // hc binary
 	herdrSock string     // the herdr CLI's default session's API socket; "": none
 	shotDir   string
-	uploadDir string // where uploads for herdr CLI panes go ("": ~/Library/Application Support/herdr-remote/uploads)
+	uploadDir string // where uploads for herdr CLI panes go ("": ~/Library/Application Support/herdsman/uploads)
 
 	// For tests; empty or nil: the real ones.
 	home         string                 // where recent folders and projects are looked for
@@ -56,14 +56,14 @@ type server struct {
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, `herdr-remote: control the Herdr app on this Mac from a phone.
+	fmt.Fprintf(os.Stderr, `herdsman: control the Herdr app on this Mac from a phone.
 
 Usage:
-  herdr-remote install     run at login (launchd), and show a QR code to pair a phone
-  herdr-remote pair        show the QR code and a fresh pairing code
-  herdr-remote status      whether it runs, where, and if it answers
-  herdr-remote uninstall   stop running at login (keeps the token)
-  herdr-remote [serve]     serve in this terminal
+  herdsman install     run at login (launchd), and show a QR code to pair a phone
+  herdsman pair        show the QR code and a fresh pairing code
+  herdsman status      whether it runs, where, and if it answers
+  herdsman uninstall   stop running at login (keeps the token)
+  herdsman [serve]     serve in this terminal
 
 Flags (install passes them on to the server):
 `)
@@ -71,6 +71,7 @@ Flags (install passes them on to the server):
 }
 
 func main() {
+	announceMigration(homeDir()) // before the token is read from its folder
 	args := os.Args[1:]
 	cmd := "serve"
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
@@ -101,13 +102,13 @@ func main() {
 			run = func() error { return install(*addr, string(token), *tokenFile, *awake) }
 		}
 		if err := run(); err != nil {
-			fmt.Fprintln(os.Stderr, "herdr-remote:", err)
+			fmt.Fprintln(os.Stderr, "herdsman:", err)
 			os.Exit(1)
 		}
 		return
 	case "uninstall":
 		if err := uninstall(); err != nil {
-			fmt.Fprintln(os.Stderr, "herdr-remote:", err)
+			fmt.Fprintln(os.Stderr, "herdsman:", err)
 			os.Exit(1)
 		}
 		return
@@ -115,7 +116,7 @@ func main() {
 		usage()
 		return
 	default:
-		fmt.Fprintf(os.Stderr, "herdr-remote: unknown command %q\n\n", cmd)
+		fmt.Fprintf(os.Stderr, "herdsman: unknown command %q\n\n", cmd)
 		usage()
 		os.Exit(2)
 	}
@@ -145,7 +146,7 @@ func main() {
 	host, _ := os.Hostname()
 
 	s := &server{token: token, tokenFile: *tokenFile, herdr: findTool("herdr-app"), hc: findTool("hc"), herdrSock: defaultHerdrSock()}
-	if s.shotDir, err = os.MkdirTemp("", "herdr-remote-"); err != nil {
+	if s.shotDir, err = os.MkdirTemp("", "herdsman-"); err != nil {
 		log.Fatal(err)
 	}
 	defer os.RemoveAll(s.shotDir)
@@ -205,7 +206,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("herdr-remote %s listening on http://%s", version, listen)
+	log.Printf("herdsman %s listening on http://%s", version, listen)
 	// The QR code is for a person at a terminal, not for launchd's log.
 	if isTerminal(os.Stdout) {
 		if err := printPairing(os.Stdout, "http://"+listen, string(token), host, *tokenFile); err != nil {
@@ -217,7 +218,7 @@ func main() {
 
 func defaultTokenFile() string {
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".config", "herdr-remote", "token")
+	return filepath.Join(home, ".config", "herdsman", "token")
 }
 
 // loadToken reads the token, making a random one when the file is missing

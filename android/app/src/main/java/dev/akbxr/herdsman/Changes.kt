@@ -1,0 +1,354 @@
+package dev.akbxr.herdsman
+
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import org.json.JSONObject
+
+data class ChangedFile(
+    val path: String,
+    val status: String,     // M, A, D, ? (new), T
+    val added: Int,
+    val deleted: Int,
+    val binary: Boolean,
+    val patch: String,
+    val truncated: Boolean,
+)
+
+/** The uncommitted changes in the agent's folder; [files] null when unchanged since [version]. */
+data class Changes(
+    val repo: Boolean,
+    val root: String,
+    val branch: String,
+    val files: List<ChangedFile>?,
+    val more: Int,
+    val version: String,
+) {
+    companion object {
+        fun from(o: JSONObject): Changes {
+            val files = if (o.optBoolean("same")) null else o.optJSONArray("files")?.let { a ->
+                (0 until a.length()).map { i ->
+                    a.getJSONObject(i).let {
+                        ChangedFile(
+                            it.optString("path"), it.optString("status"), it.optInt("added"), it.optInt("deleted"),
+                            it.optBoolean("binary"), it.optString("patch"), it.optBoolean("truncated"),
+                        )
+                    }
+                }
+            } ?: emptyList()
+            return Changes(o.optBoolean("repo"), o.optString("root"), o.optString("branch"), files, o.optInt("more"), o.optString("version"))
+        }
+    }
+}
+
+private const val SHOWN_LINES = 600   // of one file's diff, on a phone
+
+private val Added = Color(0xFF9ECE6A)
+private val Removed = Color(0xFFF7768E)
+
+/** A commit made from the phone: what the Changes view says after. */
+data class CommitDone(val hash: String, val subject: String, val files: Int = 0)
+
+/**
+ * What the agent changed, file by file: a summary line, then each file with
+ * its counts; tap one for its diff (green added, red removed, scrolling
+ * sideways rather than wrapping code). [onCommit]: the bar at the bottom
+ * that opens the commit sheet; [onDiscard]: each file's menu (⋯ or a long
+ * press). [committed]: the last commit made here, until dismissed.
+ */
+@Composable
+fun ChangesView(
+    changes: Changes?,
+    files: List<ChangedFile>,
+    modifier: Modifier = Modifier,
+    committed: CommitDone? = null,
+    onDismissCommitted: () -> Unit = {},
+    onCommit: (() -> Unit)? = null,
+    onDiscard: ((ChangedFile) -> Unit)? = null,
+) {
+    Column(modifier.fillMaxSize()) {
+        committed?.let { CommittedNote(it, onDismissCommitted, Modifier.padding(start = 12.dp, end = 12.dp, top = 10.dp)) }
+        val body = Modifier.weight(1f)
+        when {
+            changes == null -> SkeletonList(body)
+            !changes.repo -> Empty("This folder isn't a git repository, so there are no changes to show.", body)
+            files.isEmpty() -> Empty("Nothing changed since the last commit" + (if (changes.branch.isNotEmpty()) " on ${changes.branch}." else "."), body)
+            else -> {
+                LazyColumn(
+                    body.fillMaxWidth(),
+                    contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 10.dp, bottom = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    item(key = "summary") {
+                        val added = files.sumOf { it.added }
+                        val deleted = files.sumOf { it.deleted }
+                        Row(Modifier.padding(start = 4.dp, bottom = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                "${files.size + changes.more} ${if (files.size + changes.more == 1) "file" else "files"}" +
+                                    (if (changes.branch.isNotEmpty()) " on ${changes.branch}" else ""),
+                                style = Type.label, color = Ink.text,
+                            )
+                            Spacer(Modifier.width(10.dp))
+                            Text("+$added", style = Type.label.copy(fontFamily = JetBrains), color = Added)
+                            Spacer(Modifier.width(6.dp))
+                            Text("−$deleted", style = Type.label.copy(fontFamily = JetBrains), color = Removed)
+                        }
+                    }
+                    items(files, key = { it.path }) { FileCard(it, onDiscard) }
+                    if (changes.more > 0) item(key = "more") {
+                        Text("${changes.more} more files not shown.", style = Type.small, color = Ink.dust, modifier = Modifier.padding(4.dp))
+                    }
+                }
+                if (onCommit != null) CommitBar(files.size + changes.more, changes.branch, onCommit)
+            }
+        }
+    }
+}
+
+/** Under the list: commit what's here (the sheet picks the files). */
+@Composable
+private fun CommitBar(count: Int, branch: String, onCommit: () -> Unit) {
+    Box(Modifier.fillMaxWidth().height(1.dp).background(Ink.rule))
+    Row(
+        Modifier.fillMaxWidth().padding(start = 16.dp, end = 12.dp, top = 8.dp, bottom = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text("Ready to commit?", style = Type.label, color = Ink.text)
+            Text(
+                "Pick from $count ${if (count == 1) "file" else "files"}" + (if (branch.isNotEmpty()) " on $branch" else ""),
+                style = Type.small, color = Ink.dust, maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Spacer(Modifier.width(12.dp))
+        PrimaryButton("Commit…", onClick = onCommit)
+    }
+}
+
+/** The commit just made: its short hash and subject. */
+@Composable
+private fun CommittedNote(done: CommitDone, onDismiss: () -> Unit, modifier: Modifier = Modifier) {
+    Row(
+        modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(Ink.mint.copy(alpha = 0.12f))
+            .padding(start = 14.dp, top = 4.dp, bottom = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(6.dp).clip(RoundedCornerShape(3.dp)).background(Ink.mint))
+        Spacer(Modifier.width(10.dp))
+        Text("Committed", style = Type.label, color = Ink.text)
+        Spacer(Modifier.width(8.dp))
+        Text(done.hash, style = Type.small.copy(fontFamily = JetBrains), color = Ink.mint)
+        Spacer(Modifier.width(8.dp))
+        Text(done.subject, style = Type.small, color = Ink.text, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+        Box(
+            Modifier.size(40.dp).clip(RoundedCornerShape(10.dp)).clickable(role = Role.Button, onClick = onDismiss),
+            contentAlignment = Alignment.Center,
+        ) { Icon(Icons.Filled.Close, contentDescription = "Dismiss", tint = Ink.dust, modifier = Modifier.size(16.dp)) }
+    }
+}
+
+@Composable
+private fun Empty(text: String, modifier: Modifier) {
+    Box(modifier.fillMaxSize().padding(28.dp), contentAlignment = Alignment.Center) {
+        Text(text, style = Type.small, color = Ink.dust)
+    }
+}
+
+/** A new file: discarding it deletes it (the server checks it is a plain file inside the repository). */
+val ChangedFile.isNew get() = status == "?" || status == "A"
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+internal fun FileCard(f: ChangedFile, onDiscard: ((ChangedFile) -> Unit)?, startOpen: Boolean = false) {
+    var open by rememberSaveable(f.path) { mutableStateOf(startOpen) }
+    var menu by remember { mutableStateOf(false) }
+    val canOpen = f.patch.isNotEmpty()
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .border(1.dp, Ink.rule, RoundedCornerShape(10.dp))
+            .then(
+                when {
+                    onDiscard != null -> Modifier.combinedClickable(
+                        role = Role.Button,
+                        onClickLabel = if (!canOpen) null else if (open) "Fold the diff" else "Show the diff",
+                        onLongClickLabel = "Discard",
+                        onLongClick = { menu = true },
+                        onClick = { if (canOpen) open = !open },
+                    )
+                    canOpen -> Modifier.clickable(role = Role.Button, onClickLabel = if (open) "Fold the diff" else "Show the diff") { open = !open }
+                    else -> Modifier
+                },
+            ),
+    ) {
+        Row(
+            Modifier.padding(start = 12.dp, end = if (onDiscard != null) 2.dp else 12.dp, top = if (onDiscard != null) 5.dp else 10.dp, bottom = if (onDiscard != null) 5.dp else 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            StatusBadge(f.status)
+            Spacer(Modifier.width(10.dp))
+            val dir = f.path.substringBeforeLast('/', "")
+            Column(Modifier.weight(1f)) {
+                Text(f.path.substringAfterLast('/'), style = Type.label.copy(fontFamily = JetBrains, fontSize = 13.sp), color = Ink.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                if (dir.isNotEmpty()) Text(dir, style = Type.small.copy(fontSize = 12.sp), color = Ink.dust, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            Spacer(Modifier.width(8.dp))
+            when {
+                f.binary -> Text("binary", style = Type.small, color = Ink.dust)
+                else -> {
+                    if (f.added > 0) Text("+${f.added}", style = Type.small.copy(fontFamily = JetBrains), color = Added)
+                    if (f.deleted > 0) Text("  −${f.deleted}", style = Type.small.copy(fontFamily = JetBrains), color = Removed)
+                }
+            }
+            if (onDiscard != null) Box {
+                Box(
+                    Modifier.size(44.dp).clip(RoundedCornerShape(10.dp)).clickable(role = Role.Button, onClickLabel = "More for ${f.path}") { menu = true },
+                    contentAlignment = Alignment.Center,
+                ) { Icon(Icons.Filled.MoreVert, contentDescription = "More for ${f.path.substringAfterLast('/')}", tint = Ink.dust, modifier = Modifier.size(18.dp)) }
+                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, modifier = Modifier.background(Ink.pen)) {
+                    DropdownMenuItem(
+                        text = {
+                            Column {
+                                Text(if (f.isNew) "Delete file" else "Discard changes", style = Type.body.copy(fontWeight = Type.label.fontWeight), color = Ink.red)
+                                Text(if (f.isNew) "It's new: gone from the Mac" else "Back to the last commit", style = Type.small, color = Ink.dust)
+                            }
+                        },
+                        onClick = { menu = false; onDiscard(f) },
+                    )
+                }
+            }
+        }
+        if (open) {
+            // As wide as the longest line, and at least the card: the stripes reach the edge.
+            BoxWithConstraints(Modifier.fillMaxWidth().background(TermBg)) {
+                val card = maxWidth
+                Box(Modifier.horizontalScroll(rememberScrollState())) {
+                    Column(Modifier.widthIn(min = card).padding(vertical = 6.dp)) {
+                        val lines = remember(f.patch) { f.patch.lines() }
+                        DiffText(lines.take(SHOWN_LINES), card)
+                        if (f.truncated || lines.size > SHOWN_LINES) {
+                            Text("  … the rest is on the Mac", style = Type.small, color = Ink.dust, modifier = Modifier.padding(6.dp))
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+internal fun StatusBadge(status: String) {
+    val (label, color) = when (status) {
+        "M" -> "M" to Ink.blue
+        "A", "?" -> "A" to Added
+        "D" -> "D" to Removed
+        else -> status to Ink.dust
+    }
+    Box(
+        Modifier.size(22.dp).clip(RoundedCornerShape(6.dp)).background(color.copy(alpha = 0.16f)),
+        contentAlignment = Alignment.Center,
+    ) { Text(label, style = Type.label.copy(fontFamily = JetBrains, fontSize = 12.sp), color = color) }
+}
+
+/**
+ * A diff as one text (its lines coloured, the added and removed ones on a
+ * stripe drawn behind them): one layout for the whole diff rather than one
+ * Text per line, so a long diff opens and scrolls without stalling.
+ */
+@Composable
+private fun DiffText(lines: List<String>, minWidth: androidx.compose.ui.unit.Dp) {
+    val style = Type.small.copy(fontFamily = JetBrains, fontSize = 11.5.sp, lineHeight = 16.sp)
+    val text = remember(lines) {
+        buildAnnotatedString {
+            lines.forEachIndexed { i, line ->
+                val color = when {
+                    line.startsWith("@@") -> Ink.blue.copy(alpha = 0.8f)
+                    line.startsWith("+") -> Added
+                    line.startsWith("-") -> Removed
+                    line.startsWith("\\") -> Ink.dust
+                    else -> Ink.text.copy(alpha = 0.75f)
+                }
+                withStyle(SpanStyle(color = color)) { append(line) }
+                if (i < lines.lastIndex) append('\n')
+            }
+        }
+    }
+    var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
+    val addedBg = Added.copy(alpha = 0.10f)
+    val removedBg = Removed.copy(alpha = 0.10f)
+    Text(
+        text,
+        style = style,
+        softWrap = false,
+        onTextLayout = { layout = it },
+        modifier = Modifier
+            .widthIn(min = minWidth)
+            .drawBehind {
+                val l = layout ?: return@drawBehind
+                for (i in 0 until minOf(l.lineCount, lines.size)) {
+                    val bg = when {
+                        lines[i].startsWith("+") -> addedBg
+                        lines[i].startsWith("-") -> removedBg
+                        else -> continue
+                    }
+                    val top = l.getLineTop(i)
+                    drawRect(bg, topLeft = Offset(0f, top), size = Size(size.width, l.getLineBottom(i) - top))
+                }
+            }
+            .padding(horizontal = 10.dp),
+    )
+}

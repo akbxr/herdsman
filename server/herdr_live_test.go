@@ -6,12 +6,12 @@ package main
 // through a guard that lets only reading methods reach herdr and fails the
 // test on anything else.
 //
-//	HERDR_REMOTE_LIVE_HERDR=~/.config/herdr/herdr.sock go test -run TestHerdrLiveRead -v
+//	HERDSMAN_LIVE_HERDR=~/.config/herdr/herdr.sock go test -run TestHerdrLiveRead -v
 //
 // Changing things, on a throwaway session only (never the default one):
 //
 //	herdr --session hrcli-test server &
-//	HERDR_REMOTE_LIVE_HERDR_SCRATCH=~/.config/herdr/sessions/hrcli-test/herdr.sock go test -run TestHerdrLiveScratch -v
+//	HERDSMAN_LIVE_HERDR_SCRATCH=~/.config/herdr/sessions/hrcli-test/herdr.sock go test -run TestHerdrLiveScratch -v
 //	herdr session stop hrcli-test && herdr session delete hrcli-test
 
 import (
@@ -114,9 +114,9 @@ func readOnlyGuard(t *testing.T, real string) (string, func() []string) {
 }
 
 func TestHerdrLiveRead(t *testing.T) {
-	real := expandHome(os.Getenv("HERDR_REMOTE_LIVE_HERDR"))
+	real := expandHome(os.Getenv("HERDSMAN_LIVE_HERDR"))
 	if real == "" {
-		t.Skip("set HERDR_REMOTE_LIVE_HERDR to a herdr socket")
+		t.Skip("set HERDSMAN_LIVE_HERDR to a herdr socket")
 	}
 	guard, methods := readOnlyGuard(t, real)
 	appDown, _ := fakeTool(t, "herdr-app", `exit 1`)
@@ -210,9 +210,9 @@ func keysOf(m map[string]json.RawMessage) []string {
 }
 
 func TestHerdrLiveScratch(t *testing.T) {
-	sock := expandHome(os.Getenv("HERDR_REMOTE_LIVE_HERDR_SCRATCH"))
+	sock := expandHome(os.Getenv("HERDSMAN_LIVE_HERDR_SCRATCH"))
 	if sock == "" {
-		t.Skip("set HERDR_REMOTE_LIVE_HERDR_SCRATCH to a throwaway session's socket")
+		t.Skip("set HERDSMAN_LIVE_HERDR_SCRATCH to a throwaway session's socket")
 	}
 	if filepath.Clean(sock) == filepath.Clean(defaultHerdrSock()) {
 		t.Fatal("not the default session: start a throwaway one")

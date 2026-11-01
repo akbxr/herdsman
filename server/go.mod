@@ -1,4 +1,4 @@
-module github.com/akbxr/herdr-remote/server
+module github.com/akbxr/herdsman/server
 
 go 1.23
 

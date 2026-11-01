@@ -21,7 +21,7 @@ import (
 	"time"
 )
 
-const agentLabel = "dev.akbxr.herdr-remote"
+const agentLabel = "dev.akbxr.herdsman"
 
 func homeDir() string {
 	h, _ := os.UserHomeDir()
@@ -32,9 +32,9 @@ func plistPath() string {
 	return filepath.Join(homeDir(), "Library", "LaunchAgents", agentLabel+".plist")
 }
 
-func logPath() string { return filepath.Join(homeDir(), "Library", "Logs", "herdr-remote.log") }
+func logPath() string { return filepath.Join(homeDir(), "Library", "Logs", "herdsman.log") }
 
-func installedBinary() string { return filepath.Join(homeDir(), ".local", "bin", "herdr-remote") }
+func installedBinary() string { return filepath.Join(homeDir(), ".local", "bin", "herdsman") }
 
 func launchdTarget() string { return fmt.Sprintf("gui/%d", os.Getuid()) }
 
@@ -169,16 +169,19 @@ func install(flagAddr, token, tokenFile string, awake bool) error {
 	if err := os.WriteFile(plistPath(), []byte(plist(bin, args)), 0o644); err != nil {
 		return err
 	}
+	for _, p := range retireOldAgent(homeDir()) {
+		fmt.Printf("Removed the old herdr-remote %s\n", p)
+	}
 	launchctl("bootout", launchdTarget()+"/"+agentLabel) // an older copy, if loaded
 	if out, err := launchctl("bootstrap", launchdTarget(), plistPath()); err != nil {
 		return fmt.Errorf("launchctl bootstrap: %s", out)
 	}
-	fmt.Printf("Installed: herdr-remote now starts at login and restarts if it stops.\n")
+	fmt.Printf("Installed: herdsman now starts at login and restarts if it stops.\n")
 	fmt.Printf("  binary  %s\n  agent   %s\n  log     %s\n", bin, plistPath(), logPath())
 
 	addr, err := address(flagAddr)
 	if err != nil {
-		fmt.Printf("\nIt waits for Tailscale. Once Tailscale is on, run herdr-remote pair to pair a phone.\n")
+		fmt.Printf("\nIt waits for Tailscale. Once Tailscale is on, run herdsman pair to pair a phone.\n")
 		return nil
 	}
 	host, _ := os.Hostname()
@@ -194,7 +197,7 @@ func uninstall() error {
 	if !loaded && !strings.Contains(out, "No such process") && !strings.Contains(out, "Could not find") {
 		fmt.Println("It was not running.")
 	}
-	fmt.Printf("Uninstalled: herdr-remote no longer starts at login.\n")
+	fmt.Printf("Uninstalled: herdsman no longer starts at login.\n")
 	fmt.Printf("Kept: %s and the token (phones stay paired if you install again).\n", installedBinary())
 	return nil
 }
@@ -203,9 +206,9 @@ var pidRe = regexp.MustCompile(`(?m)^\s*pid = (\d+)`)
 
 func status(flagAddr, token string) error {
 	if _, err := os.Stat(plistPath()); err != nil {
-		fmt.Println("Not installed: run herdr-remote install to start it at login.")
+		fmt.Println("Not installed: run herdsman install to start it at login.")
 	} else if out, err := launchctl("print", launchdTarget()+"/"+agentLabel); err != nil {
-		fmt.Println("Installed but not loaded: run herdr-remote install again.")
+		fmt.Println("Installed but not loaded: run herdsman install again.")
 	} else if m := pidRe.FindStringSubmatch(out); m != nil {
 		fmt.Printf("Running at login (pid %s). Log: %s\n", m[1], logPath())
 	} else {
@@ -234,7 +237,7 @@ func status(flagAddr, token string) error {
 		fmt.Printf("Address http://%s: answers, but refused this token (%d).\n", addr, resp.StatusCode)
 		return nil
 	}
-	fmt.Printf("Address http://%s: answering (version %s). Pair a phone: herdr-remote pair\n", addr, ping.Version)
+	fmt.Printf("Address http://%s: answering (version %s). Pair a phone: herdsman pair\n", addr, ping.Version)
 	if ping.Awake {
 		fmt.Println("Keeping the Mac awake: an agent is working or waiting (or was, minutes ago).")
 	}

@@ -78,7 +78,7 @@ func TestPairEndpoint(t *testing.T) {
 func TestPairLinkRoundTrip(t *testing.T) {
 	link := pairLink("http://100.64.1.2:7710", "tok&en", "Mac")
 	u, err := url.Parse(link)
-	if err != nil || u.Scheme != "herdr-remote" || u.Host != "pair" {
+	if err != nil || u.Scheme != "herdsman" || u.Host != "pair" {
 		t.Fatalf("link %q: %v", link, err)
 	}
 	q := u.Query()

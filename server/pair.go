@@ -1,9 +1,9 @@
 package main
 
 // Pairing a phone without typing the token: a QR code holding a
-// herdr-remote://pair link, and a short code that trades for the token.
+// herdsman://pair link, and a short code that trades for the token.
 //
-// The code lives in a file beside the token, so `herdr-remote pair` can make
+// The code lives in a file beside the token, so `herdsman pair` can make
 // one while the server runs elsewhere (under launchd). It works once, for
 // ten minutes, and is gone after five wrong tries.
 
@@ -59,7 +59,7 @@ func newCode(tokenFile string) (string, error) {
 	return p.Code, nil
 }
 
-var errBadCode = errors.New("that code is wrong or has expired: run herdr-remote pair on the Mac for a new one")
+var errBadCode = errors.New("that code is wrong or has expired: run herdsman pair on the Mac for a new one")
 
 // redeem checks a code and uses it up. Wrong tries count; the fifth kills it.
 func redeem(tokenFile, code string) error {
@@ -92,7 +92,7 @@ func redeem(tokenFile, code string) error {
 // pairLink is what the QR code holds; the app opens it.
 func pairLink(base, token, host string) string {
 	q := url.Values{"url": {base}, "token": {token}, "host": {host}}
-	return "herdr-remote://pair?" + q.Encode()
+	return "herdsman://pair?" + q.Encode()
 }
 
 // qrText draws a QR code for a terminal: two modules per character cell
@@ -136,7 +136,7 @@ func printPairing(w io.Writer, base, token, host, tokenFile string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(w, "\nPair a phone: open Herdr Remote and tap Scan the code.\n\n%s\n", art)
+	fmt.Fprintf(w, "\nPair a phone: open Herdsman and tap Scan the code.\n\n%s\n", art)
 	fmt.Fprintf(w, "No camera? Type the address and this code (works once, for 10 minutes):\n\n")
 	fmt.Fprintf(w, "  address  %s\n  code     %s %s\n\n", strings.TrimPrefix(base, "http://"), code[:3], code[3:])
 	return nil

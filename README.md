@@ -1,16 +1,23 @@
-# Herdr Remote
+# Herdsman
 
-Control the Herdr app on your Mac from an Android phone: see which agents
-need you, read their terminals, answer them with keys or a message, switch
-tabs and layouts, and look at the window.
+Look after your coding agents from an Android phone. Herdsman drives
+[Herdr](https://herdr.dev) on your Mac, both the Herdr app and the herdr
+CLI: see which agents need you, follow their chat, answer them, review and
+commit their changes, start or resume tasks, and use their terminals.
 
 Two parts:
 
-- `server/`: `herdr-remote`, a small Go server on the Mac. It runs the
-  `herdr-app` and `hc` command-line tools (never a shell) and needs a token
-  on every request.
+- `server/`: `herdsman`, a small Go server on the Mac. It runs the
+  `herdr-app` and `hc` command-line tools (never a shell), talks to the herdr
+  CLI over its socket, and needs a token on every request.
 - `android/`: the app (Kotlin, Jetpack Compose). Design notes in
   [DESIGN.md](DESIGN.md).
+
+Formerly `herdr-remote`. An install under that name moves over on its own:
+the server takes its config (and token, so paired phones keep working with
+the server), and `herdsman install` removes the old login agent and binary.
+The Android app has a new package name, so it installs beside the old one:
+pair it again and uninstall the old app.
 
 ## Safety
 
@@ -20,7 +27,7 @@ commands on your Mac. So:
 - By default the server listens only on this Mac's **Tailscale** address.
   Tailscale encrypts the traffic and only your own devices can reach it.
 - Don't expose it on the internet or forward the port on your router.
-- `herdr-remote -new-token` replaces the token (phones pair again).
+- `herdsman -new-token` replaces the token (phones pair again).
 
 ## Mac: install the server
 
@@ -31,15 +38,15 @@ cd server
 go run . install
 ```
 
-That copies `herdr-remote` to `~/.local/bin`, and starts it at every login
+That copies `herdsman` to `~/.local/bin`, and starts it at every login
 through launchd (it restarts if it stops, and waits for Tailscale if it
 starts first). Then it shows a QR code for pairing a phone, and under it the
 address and a six-digit code:
 
 ```
-Installed: herdr-remote now starts at login and restarts if it stops.
+Installed: herdsman now starts at login and restarts if it stops.
 
-Pair a phone: open Herdr Remote and tap Scan the code.
+Pair a phone: open Herdsman and tap Scan the code.
 
   ▀▀▀▀▀▀▀▀▀  (QR code)
 
@@ -53,21 +60,21 @@ After that:
 
 | Command | Does |
 |---|---|
-| `herdr-remote pair` | QR code and a fresh code, to pair another phone |
-| `herdr-remote status` | whether it runs, its address, and if it answers |
-| `herdr-remote uninstall` | stop starting at login (the token stays) |
-| `herdr-remote` | serve in the terminal instead, without launchd |
+| `herdsman pair` | QR code and a fresh code, to pair another phone |
+| `herdsman status` | whether it runs, its address, and if it answers |
+| `herdsman uninstall` | stop starting at login (the token stays) |
+| `herdsman` | serve in the terminal instead, without launchd |
 
 Run `go run . install` again after changing the code: it replaces the binary
-and restarts the server. The log is `~/Library/Logs/herdr-remote.log`.
+and restarts the server. The log is `~/Library/Logs/herdsman.log`.
 
 Tailscale has to be on (`tailscale up`, or the menu bar app); the address is
 what `tailscale ip -4` says. Without Tailscale, use an SSH tunnel:
-`herdr-remote install -addr 127.0.0.1:7710` on the Mac, and on the phone
+`herdsman install -addr 127.0.0.1:7710` on the Mac, and on the phone
 (Termux) `ssh -L 7710:127.0.0.1:7710 akbar@<mac>`, then pair with
 `127.0.0.1:7710`.
 
-The token lives in `~/.config/herdr-remote/token` (mode 0600). The QR code
+The token lives in `~/.config/herdsman/token` (mode 0600). The QR code
 holds it; the six-digit code trades for it once (`POST /api/pair`), for ten
 minutes, and stops working after five wrong tries.
 
@@ -88,11 +95,11 @@ is shrunk and optimised by R8 and carries Compose's baseline profiles, and
 scrolls several times smoother than the debug one. Both are signed with the
 debug key, so one installs over the other and keeps the pairing.
 
-Open **Herdr Remote** and pair:
+Open **Herdsman** and pair:
 
 - **Scan the code**: point the phone at the QR code on the Mac. The scanner
   comes from Google Play services, so the app asks for no camera permission.
-  Scanning the code with another QR app also works: it opens Herdr Remote.
+  Scanning the code with another QR app also works: it opens Herdsman.
 - **No camera**: type the address and the six-digit code shown under the QR
   code, then **Pair with the code**. The address can leave out `http://`
   and `:7710`.
@@ -196,7 +203,7 @@ The phone needs Tailscale on too, signed in to the same account.
   notification. For it to keep running while the phone sleeps:
   - tap **Let it run in the background** in the app (Android's battery
     exemption);
-  - on Xiaomi, POCO and Redmi phones also: Settings → Apps → Herdr Remote →
+  - on Xiaomi, POCO and Redmi phones also: Settings → Apps → Herdsman →
     **Autostart** on, and **Battery saver** → **No restrictions**, or
     HyperOS stops it anyway;
   - Tailscale has to stay on on the phone.
@@ -221,7 +228,7 @@ All under `/api`, with `Authorization: Bearer <token>` (except `/pair`):
 | POST | `/keys` | `{terminal, keys: [...]}` → `hc keys`; a herdr pane: hc's key names translated to herdr's (below), in order; 400 for a key herdr doesn't know |
 | POST | `/interrupt` | `{terminal}` → `hc interrupt`; a herdr pane: Esc when herdr sees an agent there, else Ctrl-C → `{ok, key}` |
 | GET | `/attach?terminal=t12&cols=&rows=&token=` | WebSocket: `hc attach` in a PTY; binary frames are terminal bytes both ways, text frames `{"type":"size"}` (server) and `{"type":"resize"}`, `{"type":"reply"}` (phone); a herdr pane: a repaint stream (below) |
-| POST | `/upload?terminal=t12&name=x.png` | body = the file; `hc put` places it beside the terminal → `{path, bytes}`; a herdr pane's goes to `~/Library/Application Support/herdr-remote/uploads/<pane>/` |
+| POST | `/upload?terminal=t12&name=x.png` | body = the file; `hc put` places it beside the terminal → `{path, bytes}`; a herdr pane's goes to `~/Library/Application Support/herdsman/uploads/<pane>/` |
 | GET | `/events?after=41&wait=25` | long poll for agents' status changes → `{seq, events}`; without `after`: `{seq, current}` |
 | POST | `/answer` | `{terminal, seq, answer: allow\|deny\|reply\|option, text?, option?}`: answers a waiting agent; 409 when the prompt is gone |
 | GET | `/chat?terminal=t12&version=&limit=120` | the last `limit` items of the agent's conversation from its transcript → `{agent, source, version, items, status, live, start, limit, model, modelLabel, thinking}`; `start: true` when nothing older is left; `same: true` when unchanged (the version includes the limit). Items carry a stable `id` and, for your messages, picture ids in `images` |

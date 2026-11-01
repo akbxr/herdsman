@@ -1,4 +1,4 @@
-# Herdr Remote: design
+# Herdsman: design
 
 **Subject.** The agents (tego, Claude Code, omp…) running in Herdr on akbar's
 Mac, seen from an Android phone. **Audience:** one developer away from his
@@ -81,5 +81,5 @@ it does not swing.
 
 Sentence case, plain verbs. States: "Needs you", "Working", "Done", "Idle".
 Buttons say what happens: "Connect", "Send", "Show on Mac".
-Errors say what to do: "Can't reach your Mac. Check that herdr-remote is
+Errors say what to do: "Can't reach your Mac. Check that herdsman is
 running and Tailscale is on."

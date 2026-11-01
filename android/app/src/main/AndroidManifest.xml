@@ -17,9 +17,9 @@
     <application
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
-        android:label="Herdr Remote"
+        android:label="Herdsman"
         android:supportsRtl="true"
-        android:theme="@style/Theme.HerdrRemote"
+        android:theme="@style/Theme.Herdsman"
         android:usesCleartextTraffic="true">
         <!-- Download the QR scanner with the app, not on first scan. -->
         <meta-data
@@ -34,12 +34,12 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            <!-- The QR code's link: herdr-remote://pair?url=…&token=… -->
+            <!-- The QR code's link: herdsman://pair?url=…&token=… -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="herdr-remote" android:host="pair" />
+                <data android:scheme="herdsman" android:host="pair" />
             </intent-filter>
         </activity>
 

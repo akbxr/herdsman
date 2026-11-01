@@ -2,7 +2,7 @@ package main
 
 // A check against a real machine of hc's, read-only, skipped unless asked:
 //
-//	HERDR_REMOTE_LIVE=box HERDR_REMOTE_LIVE_TERMINAL=box/t1 go test -run TestLive -v
+//	HERDSMAN_LIVE=box HERDSMAN_LIVE_TERMINAL=box/t1 go test -run TestLive -v
 //
 // (run outside a Herdr terminal, or with HC_TERMINAL_ID and HC_TERMINAL_SOCKET
 // unset). It reads that terminal's folder through the machine and compares
@@ -25,9 +25,9 @@ import (
 )
 
 func TestLive(t *testing.T) {
-	machine, terminal := os.Getenv("HERDR_REMOTE_LIVE"), os.Getenv("HERDR_REMOTE_LIVE_TERMINAL")
+	machine, terminal := os.Getenv("HERDSMAN_LIVE"), os.Getenv("HERDSMAN_LIVE_TERMINAL")
 	if machine == "" || terminal == "" {
-		t.Skip("set HERDR_REMOTE_LIVE and HERDR_REMOTE_LIVE_TERMINAL")
+		t.Skip("set HERDSMAN_LIVE and HERDSMAN_LIVE_TERMINAL")
 	}
 	s := &server{hc: findTool("hc")}
 	h := s.on(machine)

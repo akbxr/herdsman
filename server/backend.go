@@ -324,7 +324,7 @@ func (b herdrBackend) now(ctx context.Context, t string) (terminalNow, error) {
 }
 
 // put: herdr has no file transfer, and its panes are on this Mac: the file
-// goes under herdr-remote's uploads folder, a folder per pane.
+// goes under herdsman's uploads folder, a folder per pane.
 func (b herdrBackend) put(ctx context.Context, t, file string) (string, int64, error) {
 	pane, err := b.pane(t)
 	if err != nil {
@@ -336,7 +336,7 @@ func (b herdrBackend) put(ctx context.Context, t, file string) (string, int64, e
 		if err != nil {
 			return "", 0, err
 		}
-		base = filepath.Join(cfg, "herdr-remote", "uploads")
+		base = filepath.Join(cfg, "herdsman", "uploads")
 	}
 	dir := filepath.Join(base, strings.ReplaceAll(pane, ":", "-"))
 	if err := os.MkdirAll(dir, 0o700); err != nil {

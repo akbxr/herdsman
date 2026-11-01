@@ -6,11 +6,11 @@ plugins {
 }
 
 android {
-    namespace = "dev.akbxr.herdrremote"
+    namespace = "dev.akbxr.herdsman"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "dev.akbxr.herdrremote"
+        applicationId = "dev.akbxr.herdsman"
         minSdk = 26
         targetSdk = 34
         versionCode = 1

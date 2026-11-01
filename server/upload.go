@@ -3,7 +3,7 @@ package main
 // Attachments from the phone: the bytes arrive here, and `hc put` places
 // them beside the terminal (on its machine, under herdr-core's files), so the
 // agent there can open them by path. A herdr CLI pane's file goes under
-// ~/Library/Application Support/herdr-remote/uploads/<pane>/ (backend.go).
+// ~/Library/Application Support/herdsman/uploads/<pane>/ (backend.go).
 
 import (
 	"errors"
