@@ -267,7 +267,11 @@ fun AgentScreen(api: Api, terminal: String, agent: Agent?, appScope: CoroutineSc
         if (!onScreen || mode != "changes") return@LaunchedEffect
         while (true) {
             runCatching { api.changes(terminal, changes?.version.orEmpty()) }
-                .onSuccess { c -> c.files?.let { changedFiles = it }; changes = c; chatProblem = null }
+                .onSuccess { c ->
+                    // An unchanged reply carries only its version: keep what we have.
+                    if (c.files != null) { changedFiles = c.files; changes = c } else changes = changes?.copy(version = c.version) ?: c
+                    chatProblem = null
+                }
                 .onFailure { chatProblem = it.advice(link) }
             delay(4000)
         }

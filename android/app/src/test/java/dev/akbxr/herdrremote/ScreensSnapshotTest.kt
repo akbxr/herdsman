@@ -268,6 +268,18 @@ class ScreensSnapshotTest {
 
     @Test fun discardConfirmNew() = paparazzi.snapshot { DiscardOver(changedFiles[1]) }
 
+    @Test fun chatMarkdown() = paparazzi.snapshot {
+        Frame {
+            ChatScreen(
+                null,
+                items = listOf(
+                    ChatItem("user", "bandingkan fiturnya"),
+                    ChatItem("assistant", "## Perbandingan\n\n| Fitur | herdr-remote | Ovis |\n|---|:---:|---|\n| Chat | ✓ | ✓ |\n| **Changes** | ✓ | ~~✗~~ diff saja |\n| Notifikasi | ✓ tombol | web push |\n\n- satu-satunya untuk `hc`\n  - tanpa SSH\n1. pertama\n2. kedua"),
+                ),
+            )
+        }
+    }
+
     @Test fun chatLoading() = paparazzi.snapshot {
         Frame {
             AgentContent(

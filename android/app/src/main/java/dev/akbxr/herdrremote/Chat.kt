@@ -7,6 +7,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -43,6 +44,9 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -417,8 +421,8 @@ private fun OptionButton(text: String, highlighted: Boolean, onClick: () -> Unit
 
 /**
  * The Markdown agents write, enough of it for a phone: paragraphs, headings,
- * lists, quotes, **bold**, *italic*, `code` and fenced code blocks (which
- * scroll sideways rather than wrap).
+ * lists, quotes, tables, **bold**, *italic*, ~~struck~~, `code` and fenced
+ * code blocks (which, like wide tables, scroll sideways rather than wrap).
  */
 @Composable
 fun Markdown(text: String, modifier: Modifier = Modifier, marks: Marks? = null) {
@@ -450,7 +454,54 @@ fun Markdown(text: String, modifier: Modifier = Modifier, marks: Marks? = null) 
                     Text(shown, style = Type.body, color = Ink.text)
                 }
                 is MdBlock.Para -> Text(shown, style = Type.body, color = Ink.text, modifier = reveal)
+                is MdBlock.Table -> MdTable(b, marks, occ - n, reveal)
             }
+        }
+    }
+}
+
+/**
+ * A Markdown table: header in bold over a rule, rows between hairlines, each
+ * column as wide as its longest cell (within reason); a table wider than the
+ * phone scrolls sideways.
+ */
+@Composable
+private fun MdTable(t: MdBlock.Table, marks: Marks?, first: Int, reveal: Modifier) {
+    val all = listOf(t.header) + t.rows
+    val natural = t.header.indices.map { col ->
+        val longest = all.maxOf { row -> inline(row.getOrElse(col) { "" }).text.length }
+        (longest * 7.4f + 22f).coerceIn(64f, 260f)
+    }
+    var occ = first
+    BoxWithConstraints(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .border(1.dp, Ink.rule, RoundedCornerShape(8.dp))
+            .then(reveal),
+    ) {
+        // Narrower than the answer: the columns stretch to its width.
+        val stretch = (maxWidth.value / natural.sum()).coerceAtLeast(1f)
+        val widths = natural.map { (it * stretch).dp }
+        Box(Modifier.horizontalScroll(rememberScrollState())) {
+        Column {
+            all.forEachIndexed { r, row ->
+                Row(Modifier.background(if (r == 0) Ink.pen else Color.Transparent)) {
+                    row.forEachIndexed { col, cell ->
+                        val (shown, n) = marked(inline(cell), marks, occ)
+                        occ += n
+                        Text(
+                            shown,
+                            style = if (r == 0) Type.label else Type.small.copy(fontSize = 13.5.sp, lineHeight = 19.sp),
+                            color = if (r == 0) Ink.text else Ink.text.copy(alpha = 0.9f),
+                            textAlign = when (t.align.getOrElse(col) { 'l' }) { 'c' -> TextAlign.Center; 'r' -> TextAlign.End; else -> TextAlign.Start },
+                            modifier = Modifier.width(widths[col]).padding(horizontal = 10.dp, vertical = 8.dp),
+                        )
+                    }
+                }
+                if (r < all.lastIndex) Box(Modifier.width(widths.fold(0.dp) { a, b -> a + b }).height(1.dp).background(Ink.rule))
+            }
+        }
         }
     }
 }
@@ -461,6 +512,33 @@ sealed interface MdBlock {
     data class Code(val text: String) : MdBlock
     data class Quote(val text: String) : MdBlock
     data class Item(val marker: String, val text: String, val depth: Int) : MdBlock
+    /** A table: its header cells, its rows, and each column's alignment (l, c, r). */
+    data class Table(val header: List<String>, val rows: List<List<String>>, val align: List<Char>) : MdBlock
+}
+
+private val tableRule = Regex("""^\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?$""")
+
+/** A table row's cells: split on | (not an escaped \| or one inside `code`). */
+fun tableCells(line: String): List<String> {
+    var t = line.trim()
+    if (t.startsWith("|")) t = t.drop(1)
+    if (t.endsWith("|") && !t.endsWith("\\|")) t = t.dropLast(1)
+    val cells = mutableListOf<String>()
+    val cell = StringBuilder()
+    var code = false
+    var i = 0
+    while (i < t.length) {
+        val c = t[i]
+        when {
+            c == '\\' && i + 1 < t.length && t[i + 1] == '|' -> { cell.append('|'); i++ }
+            c == '`' -> { code = !code; cell.append(c) }
+            c == '|' && !code -> { cells += cell.toString().trim(); cell.clear() }
+            else -> cell.append(c)
+        }
+        i++
+    }
+    cells += cell.toString().trim()
+    return cells
 }
 
 private val bullet = Regex("""^(\s*)[-*+]\s+(.*)$""")
@@ -477,6 +555,23 @@ fun mdBlocks(text: String): List<MdBlock> {
         val l = lines[i]
         val t = l.trim()
         when {
+            // A table: a row of cells, then a rule of dashes under it.
+            t.startsWith("|") && i + 1 < lines.size && tableRule.matches(lines[i + 1].trim()) -> {
+                flush()
+                val header = tableCells(t)
+                val align = tableCells(lines[i + 1]).map { c ->
+                    when { c.startsWith(":") && c.endsWith(":") -> 'c'; c.endsWith(":") -> 'r'; else -> 'l' }
+                }
+                val rows = mutableListOf<List<String>>()
+                i += 2
+                while (i < lines.size && lines[i].trim().startsWith("|")) {
+                    val cells = tableCells(lines[i])
+                    rows += List(header.size) { cells.getOrElse(it) { "" } }
+                    i++
+                }
+                i--  // the loop's i++ moves past the table
+                out += MdBlock.Table(header, rows, List(header.size) { align.getOrElse(it) { 'l' } })
+            }
             t.startsWith("```") -> {
                 flush()
                 val code = StringBuilder()
@@ -498,9 +593,9 @@ fun mdBlocks(text: String): List<MdBlock> {
     return out
 }
 
-private val inlineRe = Regex("""`([^`]+)`|\*\*([^*]+)\*\*|__([^_]+)__|(?<![\w*])\*([^*\s][^*]*)\*(?!\w)|\[([^\]]+)]\(([^)\s]+)\)""")
+private val inlineRe = Regex("""`([^`]+)`|\*\*([^*]+)\*\*|__([^_]+)__|(?<![\w*])\*([^*\s][^*]*)\*(?!\w)|\[([^\]]+)]\(([^)\s]+)\)|~~([^~]+)~~""")
 
-/** **bold**, *italic*, `code` and [links](…) (shown as their text). */
+/** **bold**, *italic*, `code`, ~~struck~~ and [links](…) (shown as their text). */
 fun inline(text: String): AnnotatedString = buildAnnotatedString {
     var at = 0
     for (m in inlineRe.findAll(text)) {
@@ -512,6 +607,7 @@ fun inline(text: String): AnnotatedString = buildAnnotatedString {
             g[3].isNotEmpty() -> withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(g[3]) }
             g[4].isNotEmpty() -> withStyle(SpanStyle(fontStyle = androidx.compose.ui.text.font.FontStyle.Italic)) { append(g[4]) }
             g[5].isNotEmpty() -> withStyle(SpanStyle(color = Ink.blue)) { append(g[5]) }
+            g[7].isNotEmpty() -> withStyle(SpanStyle(textDecoration = TextDecoration.LineThrough, color = Ink.dust)) { append(g[7]) }
         }
         at = m.range.last + 1
     }

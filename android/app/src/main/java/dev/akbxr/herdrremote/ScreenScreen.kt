@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -83,27 +84,36 @@ fun ScreenScreen(api: Api, herd: Herd?) {
             QuietButton("Next layout", color = Ink.text) { act { api.command("layout.switch") } }
         }
 
-        // Tabs on the Mac: tap one to show it there.
-        val tabs = herd?.tabs.orEmpty()
+        // Tabs on the Mac, every space's (the one showing first): tap one to
+        // show it there, its space too.
+        val tabs = herd?.tabs.orEmpty().sortedByDescending { it.spaceActive }
+        val spaces = tabs.map { it.spaceId }.distinct()
         if (tabs.isNotEmpty()) {
             Row(
                 Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 24.dp, vertical = 12.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                tabs.forEach { tab ->
+                tabs.forEachIndexed { i, tab ->
+                    // Each space's name before its tabs, when there are several.
+                    if (spaces.size > 1 && (i == 0 || tabs[i - 1].spaceId != tab.spaceId)) {
+                        if (i > 0) Spacer(Modifier.width(6.dp))
+                        Text(tab.spaceName, style = Type.small, color = if (tab.spaceActive) Ink.text else Ink.dust, maxLines = 1)
+                    }
+                    val shown = tab.active && tab.spaceActive
                     val agents = herd?.agents.orEmpty().filter { it.tabId == tab.id }
                     val label = agents.firstOrNull()?.title?.let { "${tab.name}  $it" } ?: tab.name
                     Box(
                         Modifier
                             .heightIn(min = 40.dp)
                             .clip(RoundedCornerShape(10.dp))
-                            .background(if (tab.active) Ink.text else Ink.pen)
-                            .border(1.dp, if (tab.active) Ink.text else Ink.rule, RoundedCornerShape(10.dp))
-                            .clickable(role = Role.Tab) { act { api.command("tab.select", JSONObject().put("id", tab.id)) } }
+                            .background(if (shown) Ink.text else Ink.pen)
+                            .border(1.dp, if (shown) Ink.text else Ink.rule, RoundedCornerShape(10.dp))
+                            .clickable(role = Role.Tab) { act { api.showTab(tab.id, if (tab.spaceActive) "" else tab.spaceId) } }
                             .padding(horizontal = 14.dp, vertical = 9.dp),
                         contentAlignment = Alignment.Center,
                     ) {
-                        Text(label, style = Type.label, color = if (tab.active) Ink.night else Ink.text, maxLines = 1)
+                        Text(label, style = Type.label, color = if (shown) Ink.night else Ink.text, maxLines = 1)
                     }
                 }
             }

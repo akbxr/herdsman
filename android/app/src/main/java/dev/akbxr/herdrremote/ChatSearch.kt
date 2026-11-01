@@ -37,6 +37,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
 import androidx.compose.foundation.clickable
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
@@ -78,6 +79,9 @@ fun shownText(b: MdBlock): AnnotatedString = when (b) {
     is MdBlock.Quote -> inline(b.text)
     is MdBlock.Item -> inline(b.text)
     is MdBlock.Para -> inline(b.text)
+    is MdBlock.Table -> buildAnnotatedString {
+        (listOf(b.header) + b.rows).flatten().forEach { append(inline(it)); append("  ") }
+    }
 }
 
 /** Where the query is in the text, ignoring case, without overlaps. */

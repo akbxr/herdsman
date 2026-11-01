@@ -35,14 +35,23 @@ data class Agent(
     val tabName: String,
     val tabActive: Boolean,
     val spaceName: String,
-    val pane: String = "", // its pane in Herdr's layout
+    val pane: String = "", // its pane in Herdr's layout,
+    val spaceId: String = "",  // to show its tab on the Mac when another space shows
 ) {
     val title get() = label ?: app
     /** The number stamped on the tag: the address without its machine. */
     val tagNumber get() = terminal.substringAfterLast('/')
 }
 
-data class Tab(val id: String, val name: String, val active: Boolean)
+/** A tab on the Mac, in its space; [active]: the tab its space shows. */
+data class Tab(
+    val id: String,
+    val name: String,
+    val active: Boolean,
+    val spaceId: String = "",
+    val spaceName: String = "",
+    val spaceActive: Boolean = true,  // the space the window shows
+)
 
 data class Herd(val layout: String, val agents: List<Agent>, val tabs: List<Tab>)
 
@@ -121,7 +130,7 @@ class Api(val base: String, val token: String) {
                 val tab = tabList.getJSONObject(j)
                 val tabId = tab.optString("id")
                 val tabName = tab.optString("name")
-                if (activeSpace) tabs += Tab(tabId, tabName, tab.optBoolean("active"))
+                tabs += Tab(tabId, tabName, tab.optBoolean("active"), space.optString("id"), space.optString("name"), activeSpace)
                 val terms = tab.optJSONArray("terminals") ?: JSONArray()
                 for (k in 0 until terms.length()) {
                     val t = terms.getJSONObject(k)
@@ -135,6 +144,7 @@ class Api(val base: String, val token: String) {
                         tabName = tabName,
                         tabActive = tab.optBoolean("active") && activeSpace,
                         spaceName = space.optString("name"),
+                        spaceId = space.optString("id"),
                     )
                 }
             }
@@ -344,7 +354,11 @@ class Api(val base: String, val token: String) {
     suspend fun closePane(pane: String) = command("pane.close", JSONObject().put("pane", pane))
     suspend fun closeTab(tabId: String) = command("tab.close", JSONObject().put("id", tabId).put("confirmed", true))
     suspend fun renameTab(tabId: String, name: String) = command("tab.rename", JSONObject().put("id", tabId).put("name", name))
-    suspend fun showTab(tabId: String) = command("tab.select", JSONObject().put("id", tabId))
+    /** Shows a tab in the Herdr window, its space first when another one shows. */
+    suspend fun showTab(tabId: String, spaceId: String = "") {
+        if (spaceId.isNotEmpty()) command("space.select", JSONObject().put("id", spaceId))
+        command("tab.select", JSONObject().put("id", tabId))
+    }
 
     /**
      * Sends a file from the phone; herdr-core places it beside the terminal.

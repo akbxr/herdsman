@@ -155,7 +155,7 @@ fun PaneActions(
         "menu" -> ActionSheet(
             title = agent.title, subtitle = where, onDismiss = onDismiss,
             actions = listOf(
-                SheetAction("Show on Mac", "Bring this tab up in the Herdr window") { act { api.showTab(agent.tabId) } },
+                SheetAction("Show on Mac", "Bring this tab up in the Herdr window") { act { api.showTab(agent.tabId, agent.spaceId) } },
                 SheetAction("Split right", "A new pane beside this one") { step = "split-right" },
                 SheetAction("Split down", "A new pane under this one") { step = "split-down" },
                 SheetAction("Zoom", "Show only this pane in its tab, or all again") { act { api.zoom(agent.pane) } },
