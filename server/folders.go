@@ -20,12 +20,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -55,7 +58,16 @@ var (
 	cwdTag   = regexp.MustCompile(`<cwd>([^<]+)</cwd>`)
 )
 
+// GET /api/folders[?machine=box]: where a task can start (on box).
 func (s *server) folders(w http.ResponseWriter, r *http.Request) {
+	if m := r.URL.Query().Get("machine"); m != "" {
+		if !validMachine(m) {
+			writeErr(w, http.StatusBadRequest, errors.New("bad machine name"))
+			return
+		}
+		s.remoteFolders(w, r, s.on(m))
+		return
+	}
 	home, _ := os.UserHomeDir()
 	if s.home != "" {
 		home = s.home
@@ -93,16 +105,9 @@ func recentFolders(ctx context.Context, home, hc string) []Folder {
 	}
 
 	// Live terminals: where you are now.
-	if out, err := run(ctx, 3*time.Second, hc, "ls", "--json"); err == nil {
-		var ls struct{ Terminals []struct{ Cwd, State string } }
-		if json.Unmarshal(out, &ls) == nil {
-			now := time.Now()
-			for _, t := range ls.Terminals {
-				if t.State == "" || t.State == "live" {
-					note(t.Cwd, now)
-				}
-			}
-		}
+	now := time.Now()
+	for _, cwd := range liveCwds(ctx, hc, "") {
+		note(cwd, now)
 	}
 
 	// Claude Code: running sessions, then each folder's newest transcript, then what you typed.
@@ -174,6 +179,140 @@ func recentFolders(ctx context.Context, home, hc string) []Folder {
 	list = kept
 	if len(list) > recentMax {
 		list = list[:recentMax]
+	}
+	return list
+}
+
+// liveCwds: the folders of the live terminals on a machine ("" this Mac).
+func liveCwds(ctx context.Context, hc, machine string) []string {
+	out, err := run(ctx, 3*time.Second, hc, "ls", "--json")
+	if err != nil {
+		return nil
+	}
+	var ls struct {
+		Terminals []struct{ Address, Cwd, State string }
+	}
+	if json.Unmarshal(out, &ls) != nil {
+		return nil
+	}
+	var cwds []string
+	for _, t := range ls.Terminals {
+		if m, _ := splitTerminal(t.Address); m == machine && (t.State == "" || t.State == "live") {
+			cwds = append(cwds, t.Cwd)
+		}
+	}
+	return cwds
+}
+
+// remoteFolders: /api/folders for another machine: its home, the folders of
+// the terminals there (its agents' transcripts aren't read), and the
+// repositories under the usual roots, found there in one round trip.
+func (s *server) remoteFolders(w http.ResponseWriter, r *http.Request, h host) {
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	home, err := h.homeDir(ctx)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	recent := []Folder{}
+	seen := map[string]bool{}
+	now := time.Now().UnixMilli()
+	for _, cwd := range liveCwds(ctx, s.hc, h.machine) {
+		if !path.IsAbs(cwd) {
+			continue
+		}
+		cwd = path.Clean(cwd)
+		if seen[strings.ToLower(cwd)] || temporary(cwd) || len(recent) >= recentMax {
+			continue
+		}
+		seen[strings.ToLower(cwd)] = true
+		recent = append(recent, Folder{Path: cwd, Name: folderName(cwd, home), Time: now})
+	}
+	sort.Slice(recent, func(i, j int) bool { return recent[i].Path < recent[j].Path })
+	projects := []Folder{}
+	for _, f := range remoteProjects(ctx, h, home) {
+		if !seen[strings.ToLower(f.Path)] {
+			projects = append(projects, f)
+		}
+	}
+	writeJSON(w, map[string]any{"home": home, "recent": recent, "projects": projects})
+}
+
+// On another machine: the repositories under the roots ($2…) of the home
+// ($1), at most four levels down, past hidden folders and dependencies:
+// "R <path>", then the mtimes of its .git, index, HEAD and FETCH_HEAD.
+const projectsScript = `home=$1; shift
+if stat -c %Y / >/dev/null 2>&1; then st() { stat -c %Y "$@" 2>/dev/null; }; else st() { stat -f %m "$@" 2>/dev/null; }; fi
+for r; do
+  d="$home/$r"
+  [ -d "$d" ] || continue
+  find "$d" -maxdepth 4 -name '.?*' ! -name .git -prune -o \
+    \( -name node_modules -o -name vendor -o -name Library -o -name target -o -name build -o -name dist \) -prune -o \
+    -name .git -print -prune 2>/dev/null |
+  while IFS= read -r g; do
+    echo "R ${g%/.git}"
+    st "$g" "$g/index" "$g/HEAD" "$g/FETCH_HEAD"
+  done
+done`
+
+// remoteProjects: projectFolders on another machine (about three seconds
+// at most, with what it found by then).
+func remoteProjects(ctx context.Context, h host, home string) []Folder {
+	ctx, cancel := context.WithTimeout(ctx, 4500*time.Millisecond)
+	defer cancel()
+	res, err := h.exec(ctx, "", nil, append([]string{"sh", "-c", projectsScript, "sh", home}, projectRoots...)...)
+	if err != nil {
+		return nil
+	}
+	type repo struct {
+		path string
+		t    int64
+	}
+	var repos []*repo
+	for _, l := range strings.Split(string(res.stdout), "\n") {
+		if p, ok := strings.CutPrefix(l, "R "); ok {
+			repos = append(repos, &repo{path: p})
+		} else if n, err := strconv.ParseInt(strings.TrimSpace(l), 10, 64); err == nil && len(repos) > 0 {
+			repos[len(repos)-1].t = max(repos[len(repos)-1].t, n*1000)
+		}
+	}
+	if res.timedOut && len(repos) > 0 {
+		repos = repos[:len(repos)-1] // its times may be cut
+	}
+	// One repository by two roots (~/Code/projects is in ~/Code; ~/code is
+	// ~/Code on a Mac's disk), none inside another, no root itself.
+	sort.Slice(repos, func(i, j int) bool { return repos[i].path < repos[j].path })
+	roots := map[string]bool{}
+	for _, r := range projectRoots {
+		roots[path.Join(home, r)] = true
+	}
+	seen := map[string]bool{}
+	inside := func(low string) bool {
+		for d := path.Dir(low); d != "/" && d != "."; d = path.Dir(d) {
+			if seen[d] {
+				return true
+			}
+		}
+		return false
+	}
+	var list []Folder
+	for _, r := range repos { // parents before their children
+		low := strings.ToLower(r.path)
+		if seen[low] || roots[r.path] || inside(low) {
+			continue
+		}
+		seen[low] = true
+		list = append(list, Folder{Path: r.path, Name: path.Base(r.path), Time: r.t})
+	}
+	sort.Slice(list, func(i, j int) bool {
+		if list[i].Time != list[j].Time {
+			return list[i].Time > list[j].Time
+		}
+		return list[i].Path < list[j].Path
+	})
+	if len(list) > projectsMax {
+		list = list[:projectsMax]
 	}
 	return list
 }

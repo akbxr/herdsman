@@ -6,8 +6,10 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"io/fs"
 	"net/http"
 	"os"
@@ -96,10 +98,101 @@ func (s *server) commands(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	agent := agentOf(fg)
-	writeJSON(w, map[string]any{"agent": agent, "commands": commandsFor(agent, fg.Cwd)})
+	h := s.hostOf(t)
+	if !h.remote() {
+		writeJSON(w, map[string]any{"agent": agent, "commands": commandsFor(agent, fg.Cwd)})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	list, err := commandsOn(ctx, h, agent, fg.Cwd)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, map[string]any{"agent": agent, "commands": list})
 }
 
+// mdFile is a command's or skill's Markdown file and its first lines.
+type mdFile struct{ path, text string }
+
 func commandsFor(agent, cwd string) []command {
+	home, _ := os.UserHomeDir()
+	return commandList(agent, cwd, home, func(dir string) []mdFile {
+		var out []mdFile
+		files, _ := filepath.Glob(filepath.Join(dir, "commands", "*.md"))
+		skills, _ := filepath.Glob(filepath.Join(dir, "skills", "*", "SKILL.md"))
+		for _, f := range append(files, skills...) {
+			out = append(out, mdFile{f, mdHead(f)})
+		}
+		return out
+	})
+}
+
+// On another machine: each folder's commands and skills, with their first
+// lines, in one script (a NUL, the path, a NUL, the lines).
+const commandsScript = `for d; do
+  for f in "$d"/commands/*.md "$d"/skills/*/SKILL.md; do
+    [ -f "$f" ] || continue
+    printf '\0%s\0' "$f"; head -n 60 "$f"
+  done
+done`
+
+// commandsOn: commandsFor on the terminal's machine, in one round trip
+// (with its home, asked once).
+func commandsOn(ctx context.Context, h host, agent, cwd string) ([]command, error) {
+	if !h.remote() {
+		return commandsFor(agent, cwd), nil
+	}
+	if agent != "tego" && agent != "claude" {
+		return commandList(agent, cwd, "", nil), nil
+	}
+	home, err := h.homeDir(ctx)
+	if err != nil {
+		return nil, err
+	}
+	dirs := commandDirs(agent, cwd, home)
+	b, err := h.run(ctx, "", append([]string{"sh", "-c", commandsScript, "sh"}, dirs...)...)
+	if err != nil {
+		return nil, err
+	}
+	byDir := map[string][]mdFile{}
+	parts := strings.Split(string(b), "\x00")
+	for i := 1; i+1 < len(parts); i += 2 {
+		f := mdFile{parts[i], parts[i+1]}
+		for _, d := range dirs {
+			if strings.HasPrefix(f.path, d+"/") {
+				byDir[d] = append(byDir[d], f)
+				break
+			}
+		}
+	}
+	return commandList(agent, cwd, home, func(dir string) []mdFile { return byDir[dir] }), nil
+}
+
+// commandDirs: where custom commands and skills are looked for: the user's,
+// then each folder from cwd up to home, each in the agent's config folders.
+func commandDirs(agent, cwd, home string) []string {
+	dirs := []string{home}
+	for d := cwd; d != "" && d != "/" && d != home && strings.HasPrefix(d, home); d = filepath.Dir(d) {
+		dirs = append(dirs, d)
+	}
+	kinds := []string{".claude"}
+	if agent == "tego" {
+		kinds = []string{".agents", ".claude", ".tego"}
+	}
+	var out []string
+	for _, d := range dirs {
+		for _, k := range kinds {
+			out = append(out, filepath.Join(d, k))
+		}
+	}
+	return out
+}
+
+// commandList: the agent's own commands, then the custom commands and skills
+// files gives for each of its folders.
+func commandList(agent, cwd, home string, files func(dir string) []mdFile) []command {
 	var out []command
 	switch agent {
 	case "tego":
@@ -111,12 +204,6 @@ func commandsFor(agent, cwd string) []command {
 	default:
 		return []command{}
 	}
-	home, _ := os.UserHomeDir()
-	// Custom commands and skills: the user's, then each folder from cwd up to home.
-	dirs := []string{home}
-	for d := cwd; d != "" && d != "/" && d != home && strings.HasPrefix(d, home); d = filepath.Dir(d) {
-		dirs = append(dirs, d)
-	}
 	seen := map[string]bool{}
 	for _, c := range out {
 		seen[c.Name] = true
@@ -127,42 +214,44 @@ func commandsFor(agent, cwd string) []command {
 			out = append(out, c)
 		}
 	}
-	kinds := []string{".claude"}
-	if agent == "tego" {
-		kinds = []string{".agents", ".claude", ".tego"}
-	}
-	for _, d := range dirs {
-		for _, k := range kinds {
-			files, _ := filepath.Glob(filepath.Join(d, k, "commands", "*.md"))
-			for _, f := range files {
-				name := strings.TrimSuffix(filepath.Base(f), ".md")
-				add(command{"/" + name, mdDescription(f)})
+	for _, d := range commandDirs(agent, cwd, home) {
+		for _, f := range files(d) {
+			if filepath.Base(f.path) != "SKILL.md" {
+				name := strings.TrimSuffix(filepath.Base(f.path), ".md")
+				add(command{"/" + name, mdDescriptionIn(f.text)})
+				continue
 			}
-			skills, _ := filepath.Glob(filepath.Join(d, k, "skills", "*", "SKILL.md"))
-			for _, f := range skills {
-				name := filepath.Base(filepath.Dir(f))
-				if n := frontmatter(f, "name"); n != "" {
-					name = n
-				}
-				if agent == "tego" {
-					add(command{"/skill:" + name, mdDescription(f)})
-				} else {
-					add(command{"/" + name, mdDescription(f)})
-				}
+			name := filepath.Base(filepath.Dir(f.path))
+			if n := frontmatterIn(f.text, "name"); n != "" {
+				name = n
+			}
+			if agent == "tego" {
+				add(command{"/skill:" + name, mdDescriptionIn(f.text)})
+			} else {
+				add(command{"/" + name, mdDescriptionIn(f.text)})
 			}
 		}
 	}
 	return out
 }
 
-// frontmatter reads one key of a Markdown file's YAML front matter.
-func frontmatter(path, key string) string {
+// mdHead: the start of a Markdown file, enough for its front matter and
+// first line of text.
+func mdHead(path string) string {
 	f, err := os.Open(path)
 	if err != nil {
 		return ""
 	}
 	defer f.Close()
-	sc := bufio.NewScanner(f)
+	b, _ := io.ReadAll(io.LimitReader(f, 64<<10))
+	return string(b)
+}
+
+// frontmatter reads one key of a Markdown file's YAML front matter.
+func frontmatter(path, key string) string { return frontmatterIn(mdHead(path), key) }
+
+func frontmatterIn(text, key string) string {
+	sc := bufio.NewScanner(strings.NewReader(text))
 	if !sc.Scan() || strings.TrimSpace(sc.Text()) != "---" {
 		return ""
 	}
@@ -179,16 +268,13 @@ func frontmatter(path, key string) string {
 }
 
 // mdDescription: the front matter's description, else the first line of text.
-func mdDescription(path string) string {
-	if d := frontmatter(path, "description"); d != "" {
+func mdDescription(path string) string { return mdDescriptionIn(mdHead(path)) }
+
+func mdDescriptionIn(text string) string {
+	if d := frontmatterIn(text, "description"); d != "" {
 		return firstLines(d, 1, 120)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		return ""
-	}
-	defer f.Close()
-	sc := bufio.NewScanner(f)
+	sc := bufio.NewScanner(strings.NewReader(text))
 	inFront := false
 	for i := 0; sc.Scan() && i < 60; i++ {
 		l := strings.TrimSpace(sc.Text())
@@ -276,6 +362,63 @@ func listFiles(ctx context.Context, dir string) []string {
 	return files
 }
 
+// listFilesOn: listFiles on the terminal's machine: git's lists in one round
+// trip; outside a repository, a shallow find for about two seconds.
+func listFilesOn(ctx context.Context, h host, dir string) ([]string, error) {
+	if !h.remote() {
+		return listFiles(ctx, dir), nil
+	}
+	key := h.machine + "\x00" + dir
+	fileLists.Lock()
+	l, ok := fileLists.m[key]
+	fileLists.Unlock()
+	if ok && time.Since(l.at) < 30*time.Second {
+		return l.files, nil
+	}
+	var files []string
+	lines := func(out []byte, max int) {
+		for _, f := range strings.Split(string(out), "\n") {
+			if f = strings.TrimPrefix(f, "./"); f != "" && f != "." && len(files) < max {
+				files = append(files, f)
+			}
+		}
+	}
+	out, err := h.batch(ctx, "", [][]string{
+		{"git", "-C", dir, "ls-files", "--cached"},
+		{"git", "-C", dir, "ls-files", "--others", "--exclude-standard"},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if out[0].ok && len(out[0].out) > 0 {
+		lines(out[0].out, maxListed)
+		if out[1].ok {
+			lines(out[1].out, maxListed)
+		}
+	} else {
+		quick, cancel := context.WithTimeout(ctx, 3500*time.Millisecond) // two seconds there
+		r, err := h.exec(quick, dir, nil, "find", ".", "-maxdepth", "4",
+			"(", "-type", "d", "(", "-name", ".?*", "-o", "-name", "node_modules", "-o", "-name", "Library",
+			"-o", "-name", "vendor", "-o", "-name", "build", ")", "-prune", ")", "-o", "-type", "f", "-print")
+		cancel()
+		if err != nil {
+			return nil, err
+		}
+		found := r.stdout
+		if r.timedOut { // the last line may be cut
+			found = found[:bytes.LastIndexByte(found, '\n')+1]
+		}
+		lines(found, 5000) // what it found in time, unreadable folders left out
+	}
+	fileLists.Lock()
+	if len(fileLists.m) > 64 {
+		clear(fileLists.m)
+	}
+	fileLists.m[key] = fileList{time.Now(), files}
+	fileLists.Unlock()
+	return files, nil
+}
+
 // matchFiles ranks the files for a query: a name that starts with it first,
 // then a name that holds it, then a path that holds its letters in order.
 func matchFiles(files []string, q string, limit int) []string {
@@ -350,5 +493,10 @@ func (s *server) files(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
 	defer cancel()
-	writeJSON(w, map[string]any{"cwd": fg.Cwd, "files": matchFiles(listFiles(ctx, fg.Cwd), r.URL.Query().Get("q"), 40)})
+	list, err := listFilesOn(ctx, s.hostOf(t), fg.Cwd)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, map[string]any{"cwd": fg.Cwd, "files": matchFiles(list, r.URL.Query().Get("q"), 40)})
 }

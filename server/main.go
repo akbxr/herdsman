@@ -176,6 +176,12 @@ func main() {
 	mux.HandleFunc("GET /api/models", s.auth(s.modelsHandler)) // the models and thinking levels an agent offers
 	mux.HandleFunc("POST /api/session", s.auth(s.session))     // switch a running agent's model or thinking level
 
+	// The machines tasks run on (machines.go).
+	mux.HandleFunc("GET /api/machines", s.auth(s.machinesHandler))         // this Mac and hc's machines
+	mux.HandleFunc("POST /api/machines", s.auth(s.machineAdd))             // hc machine add
+	mux.HandleFunc("POST /api/machines/remove", s.auth(s.machineRemove))   // hc machine rm
+	mux.HandleFunc("POST /api/machines/connect", s.auth(s.machineConnect)) // dial one now
+
 	// The Changes view's actions (commit.go).
 	mux.HandleFunc("POST /api/commit", s.auth(s.commit))               // commit the files picked
 	mux.HandleFunc("GET /api/commit/suggest", s.auth(s.commitSuggest)) // a message from the changed files' names
@@ -388,6 +394,13 @@ func (s *server) ping(w http.ResponseWriter, r *http.Request) {
 // state is what the phone polls: the window (status) and its spaces, tabs
 // and terminals (ls), in one request.
 func (s *server) state(w http.ResponseWriter, r *http.Request) {
+	machines := make(chan json.RawMessage, 1) // hc's machines, meanwhile; left out when hc can't say
+	go func() {
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		defer cancel()
+		raw, _ := s.machinesRaw(ctx)
+		machines <- raw
+	}()
 	status, err := run(r.Context(), 10*time.Second, s.herdr, "status")
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, fmt.Errorf("herdr-app status: %w (is the Herdr window open?)", err))
@@ -398,7 +411,11 @@ func (s *server) state(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, fmt.Errorf("herdr-app ls: %w", err))
 		return
 	}
-	writeJSON(w, map[string]json.RawMessage{"status": status, "ls": ls})
+	reply := map[string]json.RawMessage{"status": status, "ls": ls}
+	if m := <-machines; m != nil {
+		reply["machines"] = m
+	}
+	writeJSON(w, reply)
 }
 
 // shot sends the window's last frame as a JPEG, scaled down for a phone.

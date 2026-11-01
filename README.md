@@ -210,7 +210,7 @@ All under `/api`, with `Authorization: Bearer <token>` (except `/pair`):
 |---|---|---|
 | POST | `/pair` | `{code}` → `{token, host}`; no token needed, the code is the key |
 | GET | `/ping` | host name, version |
-| GET | `/state` | `herdr-app status` + `herdr-app ls` |
+| GET | `/state` | `herdr-app status` + `herdr-app ls`, and `machines`: the array of `hc machine ls --json` (left out when hc can't list them) |
 | GET | `/shot?max=1600` | JPEG of the window |
 | POST | `/do` | `{command, args?}` → `herdr-app do` |
 | GET | `/read?terminal=t12&lines=200` | `hc read` |
@@ -230,13 +230,25 @@ All under `/api`, with `Authorization: Bearer <token>` (except `/pair`):
 | POST | `/discard` | `{terminal, path}`: one changed file back to the last commit; a new file is deleted (a regular file inside the repository only) |
 | GET | `/commands?terminal=t12` | the agent's slash commands, custom commands and skills |
 | GET | `/files?terminal=t12&q=att` | files in the agent's folder, best matches first |
-| GET | `/folders` | where a new task can start: `{home, recent, projects}` |
-| GET | `/agents` | the agents installed on the Mac |
-| POST | `/task` | `{cwd, agent, prompt, model?, thinking?}`: a new tab running the agent; model and thinking become its start flags, checked against `/models` → `{terminal, tab, prompt}` |
-| GET | `/sessions?cwd=&agent=&limit=50` | sessions tego and Claude Code can resume, newest first, in `cwd` or anywhere (not temporary or deleted folders) → `{home, sessions: [{agent, id, title, cwd, time, messages, estimate, size, running}], partial}`; `running`: the terminal it runs in now; `estimate`: `messages` is a lower bound, not counted to the end yet; `partial`: the scan ran out of time. Reads the start and end of each transcript, keeps what it read until the file changes |
-| POST | `/resume` | `{agent, id, model?, thinking?}`: a new tab in the session's folder running `tego --resume <id>` / `claude --resume <id>` → `{terminal, tab, space, agent, id, cwd}`; 404 for an unknown session, 400 for a malformed id or an empty session, 409 when its folder is gone or it runs already (`terminal` names it) |
-| GET | `/models?agent=tego\|claude\|codex` | `{agent, models: [{id, label, group}], thinking: [{id, label, detail}], thinkingName, live, note}` (kept a minute) |
-| POST | `/session` | `{terminal, agent?, model?, thinking?}`: switches a running tego or Claude Code with its own slash commands → `{agent, sent, current}`; 409 while it works or waits for you, or when the terminal no longer runs `agent`; 400 for a model or level it doesn't offer |
+| GET | `/folders?machine=` | where a new task can start: `{home, recent, projects}`; with `machine`, on that machine (recent: its terminals' folders) |
+| GET | `/agents?machine=` | the agents installed on the Mac, or on `machine` |
+| POST | `/task` | `{cwd, agent, prompt, model?, thinking?, machine?}`: a new tab running the agent; model and thinking become its start flags, checked against `/models`; with `machine`, `cwd` is a folder there and the tab opens in a space on that machine (the active one), else in a new space there → `{terminal, tab, space, agent, prompt}` (`terminal` is `machine/t7` then) |
+| GET | `/machines` | `{machines: [{name, label, host, state, why, temporary, local}]}`: this Mac first (`name` "", `local` true), then hc's machines; `state` connecting, connected, needs_login or unreachable; `error` when hc couldn't list them |
+| POST | `/machines` | `{host: "user@box", name?}` → `hc machine add --install` without a terminal (ssh keys only, never a password prompt; 60 s at most) → `{machine}`; 400 for a malformed host or name, 502 with hc's message when it fails |
+| POST | `/machines/remove` | `{name}` → `hc machine rm` → `{removed}`; 404 for an unknown machine |
+| POST | `/machines/connect` | `{name}`: dials it now (hc's `machine.connect`) → `{machine}`; 409 when it needs a password (`hc machine login NAME` on the Mac) |
+| GET | `/sessions?cwd=&agent=&limit=50&machine=` | sessions tego and Claude Code can resume, newest first, in `cwd` or anywhere (not temporary or deleted folders) → `{home, sessions: [{agent, id, title, cwd, time, messages, estimate, size, running}], partial}`; `running`: the terminal it runs in now; `estimate`: `messages` is a lower bound, not counted to the end yet; `partial`: the scan ran out of time. Reads the start and end of each transcript, keeps what it read until the file changes. With `machine` (another one): `{home, sessions: [], partial: false, note}` |
+| POST | `/resume` | `{agent, id, model?, thinking?}` (this Mac only: 400 with `machine`): a new tab in the session's folder running `tego --resume <id>` / `claude --resume <id>` → `{terminal, tab, space, agent, id, cwd}`; 404 for an unknown session, 400 for a malformed id or an empty session, 409 when its folder is gone or it runs already (`terminal` names it) |
+| GET | `/models?agent=tego\|claude\|codex&terminal=` | `{agent, models: [{id, label, group}], thinking: [{id, label, detail}], thinkingName, live, note, supported: true}` (kept a minute); for a terminal on another machine `{supported: false, why}` |
+| POST | `/session` | `{terminal, agent?, model?, thinking?}`: switches a running tego or Claude Code with its own slash commands → `{agent, sent, current}`; 409 while it works or waits for you, or when the terminal no longer runs `agent`; 400 for a model or level it doesn't offer; for a terminal on another machine `{supported: false, why}` and nothing sent |
+
+Terminals on other machines (`hc machine add`) have addresses like
+`box/t7`; every endpoint that takes a terminal takes those. What the server
+reads beside hc (git for changes, commit and discard, the agent's
+transcript and its pictures, commands, files) it reads on that machine
+through `hc exec --on box`, batched into one or two round trips. On another
+machine, sessions are not listed (`{sessions: [], note}`) and the chat's
+model comes from the agent's screen only.
 
 The terminal page (`android/app/src/main/assets/term/terminal.html`) also
 opens in a desktop browser for debugging: `terminal.html#ws=<attach URL>`.

@@ -85,11 +85,17 @@ type multi struct{ a, b *bytes.Buffer }
 func (m *multi) Write(p []byte) (int, error) { m.a.Write(p); return m.b.Write(p) }
 
 // repoRoot: the top of the git repository cwd is in.
-func repoRoot(ctx context.Context, cwd string) (string, error) {
+func repoRoot(ctx context.Context, cwd string) (string, error) { return repoRootOn(ctx, host{}, cwd) }
+
+func repoRootOn(ctx context.Context, h host, cwd string) (string, error) {
 	if cwd == "" {
 		return "", errBadRequest{"the terminal's folder isn't known"}
 	}
-	top, err := git(ctx, cwd, "rev-parse", "--show-toplevel")
+	top, err := h.git(ctx, cwd, "rev-parse", "--show-toplevel")
+	var unreached hcErr
+	if errors.As(err, &unreached) {
+		return "", err // the machine, not the folder
+	}
 	if err != nil {
 		return "", errBadRequest{"the terminal's folder isn't in a git repository"}
 	}
@@ -100,15 +106,19 @@ func repoRoot(ctx context.Context, cwd string) (string, error) {
 // commit, as the Changes view lists them; "?" for new files git doesn't
 // ignore.
 func changedSet(ctx context.Context, root string) (map[string]string, error) {
+	return changedSetOn(ctx, host{}, root)
+}
+
+func changedSetOn(ctx context.Context, h host, root string) (map[string]string, error) {
 	base := "HEAD"
-	if _, err := git(ctx, root, "rev-parse", "--verify", "-q", "HEAD"); err != nil {
+	if _, err := h.git(ctx, root, "rev-parse", "--verify", "-q", "HEAD"); err != nil {
 		base = emptyTree
 	}
-	status, err := git(ctx, root, "diff", "--name-status", "--no-renames", "-z", base)
+	status, err := h.git(ctx, root, "diff", "--name-status", "--no-renames", "-z", base)
 	if err != nil {
 		return nil, fmt.Errorf("git diff: %w", err)
 	}
-	untracked, err := git(ctx, root, "ls-files", "--others", "--exclude-standard", "-z")
+	untracked, err := h.git(ctx, root, "ls-files", "--others", "--exclude-standard", "-z")
 	if err != nil {
 		return nil, fmt.Errorf("git ls-files: %w", err)
 	}
@@ -173,6 +183,10 @@ type commitResult struct {
 
 // gitCommit commits exactly paths (each a changed file) with message.
 func gitCommit(ctx context.Context, root, message string, paths []string) (commitResult, error) {
+	return gitCommitOn(ctx, host{}, root, message, paths)
+}
+
+func gitCommitOn(ctx context.Context, h host, root, message string, paths []string) (commitResult, error) {
 	message = strings.TrimSpace(message)
 	switch {
 	case message == "":
@@ -184,7 +198,7 @@ func gitCommit(ctx context.Context, root, message string, paths []string) (commi
 	case len(paths) > maxCommitPaths:
 		return commitResult{}, errBadRequest{"too many files for one commit from the phone"}
 	}
-	set, err := changedSet(ctx, root)
+	set, err := changedSetOn(ctx, h, root)
 	if err != nil {
 		return commitResult{}, err
 	}
@@ -199,21 +213,21 @@ func gitCommit(ctx context.Context, root, message string, paths []string) (commi
 		}
 	}
 	if len(fresh) > 0 {
-		if _, err := gitDo(ctx, root, append([]string{"add", "--intent-to-add", "--"}, literal(fresh...)...)...); err != nil {
+		if _, err := h.gitDo(ctx, root, append([]string{"add", "--intent-to-add", "--"}, literal(fresh...)...)...); err != nil {
 			return commitResult{}, err
 		}
 	}
-	if _, err := gitDo(ctx, root, append([]string{"commit", "-m", message, "--only", "--"}, literal(paths...)...)...); err != nil {
+	if _, err := h.gitDo(ctx, root, append([]string{"commit", "-m", message, "--only", "--"}, literal(paths...)...)...); err != nil {
 		if len(fresh) > 0 {
 			// New files again, as they were: not in the index.
 			undo, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-			gitDo(undo, root, append([]string{"rm", "--cached", "-q", "-f", "--ignore-unmatch", "--"}, literal(fresh...)...)...)
+			h.gitDo(undo, root, append([]string{"rm", "--cached", "-q", "-f", "--ignore-unmatch", "--"}, literal(fresh...)...)...)
 			cancel()
 		}
 		return commitResult{}, err
 	}
 	res := commitResult{Files: len(paths)}
-	if out, err := git(ctx, root, "log", "-1", "--format=%h%x00%s"); err == nil {
+	if out, err := h.git(ctx, root, "log", "-1", "--format=%h%x00%s"); err == nil {
 		res.Hash, res.Subject, _ = strings.Cut(strings.TrimSpace(string(out)), "\x00")
 	}
 	return res, nil
@@ -221,8 +235,10 @@ func gitCommit(ctx context.Context, root, message string, paths []string) (commi
 
 // gitDiscard puts one changed file back as the last commit has it, or
 // deletes it when it is new.
-func gitDiscard(ctx context.Context, root, p string) error {
-	set, err := changedSet(ctx, root)
+func gitDiscard(ctx context.Context, root, p string) error { return gitDiscardOn(ctx, host{}, root, p) }
+
+func gitDiscardOn(ctx context.Context, h host, root, p string) error {
+	set, err := changedSetOn(ctx, h, root)
 	if err != nil {
 		return err
 	}
@@ -231,19 +247,19 @@ func gitDiscard(ctx context.Context, root, p string) error {
 	}
 	switch set[p] {
 	case "?":
-		return removeNew(root, p)
+		return h.removeNew(ctx, root, p)
 	case "A": // staged, not in the last commit: out of the index, then gone
-		if err := newFileInside(root, p); err != nil {
+		if err := h.newFileInside(ctx, root, p); err != nil {
 			return err
 		}
-		if _, err := gitDo(ctx, root, append([]string{"rm", "--cached", "-q", "-f", "--"}, literal(p)...)...); err != nil {
+		if _, err := h.gitDo(ctx, root, append([]string{"rm", "--cached", "-q", "-f", "--"}, literal(p)...)...); err != nil {
 			return err
 		}
-		return removeNew(root, p)
+		return h.removeNew(ctx, root, p)
 	}
-	_, err = gitDo(ctx, root, append([]string{"restore", "--source=HEAD", "--staged", "--worktree", "--"}, literal(p)...)...)
+	_, err = h.gitDo(ctx, root, append([]string{"restore", "--source=HEAD", "--staged", "--worktree", "--"}, literal(p)...)...)
 	if err != nil && strings.Contains(err.Error(), "restore") && strings.Contains(err.Error(), "not a git command") {
-		_, err = gitDo(ctx, root, append([]string{"checkout", "HEAD", "--"}, literal(p)...)...) // git older than 2.23
+		_, err = h.gitDo(ctx, root, append([]string{"checkout", "HEAD", "--"}, literal(p)...)...) // git older than 2.23
 	}
 	return err
 }
@@ -291,6 +307,70 @@ func removeNew(root, p string) error {
 		return err
 	}
 	return os.Remove(filepath.Join(root, filepath.FromSlash(p)))
+}
+
+// On another machine, newFileInside's checks (and with "rm", removeNew's
+// delete) in one script: it prints what it found. readlink -f is in GNU,
+// busybox and macOS 12.3 on; without it a link is left alone.
+const newFileScript = `root=$(cd -P "$1" 2>/dev/null && pwd -P) || { echo noroot; exit 0; }
+full="$1/$2"
+inside() { case "$1" in "$root"/*) return 0;; *) return 1;; esac; }
+d=$(cd -P "$(dirname "$full")" 2>/dev/null && pwd -P) || { echo outside; exit 0; }
+if [ "$d" != "$root" ] && ! inside "$d"; then echo outside; exit 0; fi
+if [ -L "$full" ]; then
+  t=$(readlink -f "$full" 2>/dev/null) || t=
+  if [ -z "$t" ] || ! inside "$t"; then echo linkout; exit 0; fi
+  [ -f "$t" ] || { echo linkdir; exit 0; }
+elif [ -d "$full" ]; then echo dir; exit 0
+elif [ ! -e "$full" ]; then echo missing; exit 0
+elif [ ! -f "$full" ]; then echo special; exit 0
+fi
+if [ "$3" = rm ]; then rm -f -- "$full" || exit 1; fi
+echo ok`
+
+// newFile checks (and with rm, deletes) a new file on the host.
+func (h host) newFile(ctx context.Context, root, p string, rm bool) error {
+	if !h.remote() {
+		if rm {
+			return removeNew(root, p)
+		}
+		return newFileInside(root, p)
+	}
+	mode := "check"
+	if rm {
+		mode = "rm"
+	}
+	out, err := h.run(ctx, "", "sh", "-c", newFileScript, "sh", root, p, mode)
+	if err != nil {
+		return err
+	}
+	switch strings.TrimSpace(string(out)) {
+	case "ok":
+		return nil
+	case "noroot":
+		return fmt.Errorf("%s: the repository's folder is gone", h.machine)
+	case "outside":
+		return errBadRequest{fmt.Sprintf("%s is outside the repository", p)}
+	case "linkout":
+		return errBadRequest{fmt.Sprintf("%s links outside the repository; left alone", p)}
+	case "linkdir":
+		return errBadRequest{fmt.Sprintf("%s links to a folder; left alone", p)}
+	case "dir":
+		return errBadRequest{fmt.Sprintf("%s is a folder; only files are discarded", p)}
+	case "missing":
+		return fmt.Errorf("%s: no such file", p)
+	case "special":
+		return errBadRequest{fmt.Sprintf("%s isn't a regular file; left alone", p)}
+	}
+	return fmt.Errorf("%s: couldn't check %s: %s", h.machine, p, firstLines(string(out), 2, 200))
+}
+
+func (h host) newFileInside(ctx context.Context, root, p string) error {
+	return h.newFile(ctx, root, p, false)
+}
+
+func (h host) removeNew(ctx context.Context, root, p string) error {
+	return h.newFile(ctx, root, p, true)
 }
 
 // suggestMessage writes a Conventional Commits message from the paths and
@@ -448,14 +528,14 @@ func (s *server) commit(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, errors.New("need {terminal, message, paths}"))
 		return
 	}
-	root, ok := s.repoOf(w, r, req.Terminal)
+	h, root, ok := s.repoOf(w, r, req.Terminal)
 	if !ok {
 		return
 	}
 	// Hooks (tests, linters) can take a while.
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
 	defer cancel()
-	res, err := gitCommit(ctx, root, req.Message, req.Paths)
+	res, err := gitCommitOn(ctx, h, root, req.Message, req.Paths)
 	if err != nil {
 		writeGitErr(w, err)
 		return
@@ -474,13 +554,13 @@ func (s *server) discard(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, errors.New("need {terminal, path}"))
 		return
 	}
-	root, ok := s.repoOf(w, r, req.Terminal)
+	h, root, ok := s.repoOf(w, r, req.Terminal)
 	if !ok {
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
-	if err := gitDiscard(ctx, root, req.Path); err != nil {
+	if err := gitDiscardOn(ctx, h, root, req.Path); err != nil {
 		writeGitErr(w, err)
 		return
 	}
@@ -495,13 +575,13 @@ func (s *server) commitSuggest(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, errors.New("need terminal"))
 		return
 	}
-	root, ok := s.repoOf(w, r, t)
+	h, root, ok := s.repoOf(w, r, t)
 	if !ok {
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
-	set, err := changedSet(ctx, root)
+	set, err := changedSetOn(ctx, h, root)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
@@ -521,26 +601,34 @@ func (s *server) commitSuggest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"message": suggestMessage(set)})
 }
 
-func (s *server) repoOf(w http.ResponseWriter, r *http.Request, terminal string) (string, bool) {
+// repoOf: the machine a terminal runs on and the root of the repository
+// it works in; false when it answered the phone with an error.
+func (s *server) repoOf(w http.ResponseWriter, r *http.Request, terminal string) (host, string, bool) {
+	h := s.hostOf(terminal)
 	fg, err := s.foreground(r, terminal)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
-		return "", false
+		return h, "", false
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
-	root, err := repoRoot(ctx, fg.Cwd)
+	root, err := repoRootOn(ctx, h, fg.Cwd)
 	if err != nil {
 		writeGitErr(w, err)
-		return "", false
+		return h, "", false
 	}
-	return root, true
+	return h, root, true
 }
 
 func writeGitErr(w http.ResponseWriter, err error) {
 	var bad errBadRequest
 	if errors.As(err, &bad) {
 		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	var hcFailed hcErr
+	if errors.As(err, &hcFailed) {
+		writeErr(w, http.StatusBadGateway, err) // the machine couldn't be reached
 		return
 	}
 	writeErr(w, http.StatusUnprocessableEntity, err)

@@ -60,7 +60,12 @@ type ModelChoices struct {
 	ThinkingName string      `json:"thinkingName"` // what the agent calls it: Thinking, Effort, Reasoning
 	Live         bool        `json:"live"`         // a running session can switch
 	Note         string      `json:"note,omitempty"`
+	Supported    bool        `json:"supported"` // false: the terminal runs on another machine
 }
+
+// What the phone hears about switching models of a terminal on another
+// machine: its agents' settings and model lists are there.
+var remoteModels = map[string]any{"supported": false, "why": "Models are switched on this Mac only."}
 
 var tegoLevels = []LevelInfo{
 	{"off", "Off", ""},
@@ -354,13 +359,43 @@ func startFlags(agent, model, thinking string) []string {
 
 // GET /api/models?agent=tego: the models and levels it offers.
 func (s *server) modelsHandler(w http.ResponseWriter, r *http.Request) {
+	if t := r.URL.Query().Get("terminal"); t != "" {
+		if !validTerminal(t) {
+			writeErr(w, http.StatusBadRequest, errors.New("bad terminal"))
+			return
+		}
+		if m, _ := splitTerminal(t); m != "" {
+			writeJSON(w, remoteModels)
+			return
+		}
+	}
 	agent := r.URL.Query().Get("agent")
 	c := s.modelChoices(agent)
 	if c == nil {
 		writeErr(w, http.StatusNotFound, fmt.Errorf("no model choices for %q (tego, claude or codex)", agent))
 		return
 	}
-	writeJSON(w, c)
+	reply := *c
+	reply.Supported = true
+	writeJSON(w, reply)
+}
+
+// screenCurrent: what a session's screen says of its model and level (all
+// there is for one on another machine).
+func screenCurrent(agent, screen string) Current {
+	switch agent {
+	case "tego":
+		if label, thinking, ok := tegoStatus(screen); ok {
+			return Current{ModelLabel: label, Thinking: thinking}
+		}
+	case "claude":
+		model, effort := claudeHeader(screen)
+		if e := claudeEffort(screen); e != "" {
+			effort = e
+		}
+		return Current{ModelLabel: model, Thinking: effort}
+	}
+	return Current{}
 }
 
 // Current is the model and level a running session uses now ("": not known).
@@ -672,6 +707,10 @@ func (s *server) session(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := decode(r, &req); err != nil || !validTerminal(req.Terminal) || (req.Model == "" && req.Thinking == "") {
 		writeErr(w, http.StatusBadRequest, errors.New("need {terminal, model and/or thinking}"))
+		return
+	}
+	if m, _ := splitTerminal(req.Terminal); m != "" {
+		writeJSON(w, remoteModels) // nothing sent
 		return
 	}
 	now, err := s.terminalNow(r.Context(), req.Terminal)
