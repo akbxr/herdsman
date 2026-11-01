@@ -218,31 +218,16 @@ func (s *server) task(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var flags []string
-	if req.Model != "" || req.Thinking != "" {
-		kind := agentOf(foregroundInfo{Name: agent.ID, Argv: agent.Argv}) // programs.json may run it by another name
-		choices := s.modelChoices(kind)
-		if choices == nil {
-			writeErr(w, http.StatusBadRequest, fmt.Errorf("%s doesn't take a model from here", agent.Name))
-			return
-		}
-		if err := choices.check(req.Model, req.Thinking); err != nil {
-			writeErr(w, http.StatusBadRequest, err)
-			return
-		}
-		flags = startFlags(kind, req.Model, req.Thinking)
+	flags, err := s.modelFlags(*agent, req.Model, req.Thinking)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
 	}
 
 	argv, delivery := taskLaunch(*agent, prompt, flags...)
-	args, _ := json.Marshal(map[string]any{"folder": cwd, "argv": argv})
-	out, err := run(r.Context(), 20*time.Second, s.herdr, "do", "tab.new", string(args))
+	made, code, err := s.openTab(r.Context(), cwd, argv)
 	if err != nil {
-		writeErr(w, http.StatusBadGateway, fmt.Errorf("herdr-app: %w (is the Herdr window open?)", err))
-		return
-	}
-	var made struct{ Space, Tab, Terminal string }
-	if err := json.Unmarshal(out, &made); err != nil || !validTerminal(made.Terminal) {
-		writeErr(w, http.StatusBadGateway, fmt.Errorf("herdr-app made the tab but didn't name its terminal: %s", strings.TrimSpace(string(out))))
+		writeErr(w, code, err)
 		return
 	}
 	if delivery == "typed" {
@@ -254,6 +239,41 @@ func (s *server) task(w http.ResponseWriter, r *http.Request) {
 		}()
 	}
 	writeJSON(w, map[string]string{"terminal": made.Terminal, "tab": made.Tab, "space": made.Space, "agent": agent.ID, "prompt": delivery})
+}
+
+// modelFlags: the flags that start an agent with a model and thinking level
+// (none for "", its own default), once checked against what it offers.
+func (s *server) modelFlags(agent AgentInfo, model, thinking string) ([]string, error) {
+	if model == "" && thinking == "" {
+		return nil, nil
+	}
+	kind := agentOf(foregroundInfo{Name: agent.ID, Argv: agent.Argv}) // programs.json may run it by another name
+	choices := s.modelChoices(kind)
+	if choices == nil {
+		return nil, fmt.Errorf("%s doesn't take a model from here", agent.Name)
+	}
+	if err := choices.check(model, thinking); err != nil {
+		return nil, err
+	}
+	return startFlags(kind, model, thinking), nil
+}
+
+// tabMade is the tab herdr-app opened and the terminal in it.
+type tabMade struct{ Space, Tab, Terminal string }
+
+// openTab opens a tab in the Herdr window in folder running argv; on
+// failure, the HTTP status to answer with.
+func (s *server) openTab(ctx context.Context, folder string, argv []string) (tabMade, int, error) {
+	args, _ := json.Marshal(map[string]any{"folder": folder, "argv": argv})
+	out, err := run(ctx, 20*time.Second, s.herdr, "do", "tab.new", string(args))
+	if err != nil {
+		return tabMade{}, http.StatusBadGateway, fmt.Errorf("herdr-app: %w (is the Herdr window open?)", err)
+	}
+	var made tabMade
+	if err := json.Unmarshal(out, &made); err != nil || !validTerminal(made.Terminal) {
+		return tabMade{}, http.StatusBadGateway, fmt.Errorf("herdr-app made the tab but didn't name its terminal: %s", strings.TrimSpace(string(out)))
+	}
+	return made, 0, nil
 }
 
 // typeWhenReady waits for the program to start in the terminal and settle

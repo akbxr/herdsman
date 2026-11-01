@@ -338,6 +338,11 @@ func cwdOf(path string) string {
 	}
 	defer f.Close()
 	head, _ := io.ReadAll(io.LimitReader(f, 64<<10))
+	return cwdIn(head)
+}
+
+// cwdIn: the first cwd named in the start of a transcript.
+func cwdIn(head []byte) string {
 	if m := cwdJSON.FindSubmatch(head); m != nil {
 		var s string
 		if json.Unmarshal(append(append([]byte{'"'}, m[1]...), '"'), &s) == nil {

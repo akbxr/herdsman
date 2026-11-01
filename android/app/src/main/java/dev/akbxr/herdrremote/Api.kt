@@ -46,7 +46,8 @@ data class Tab(val id: String, val name: String, val active: Boolean)
 
 data class Herd(val layout: String, val agents: List<Agent>, val tabs: List<Tab>)
 
-class ApiError(message: String) : IOException(message)
+/** The Mac said no; [terminal]: the one it points to instead (a session running already). */
+class ApiError(message: String, val terminal: String? = null) : IOException(message)
 
 /** A program's status change, in its own words (OSC 7501 via herdr-core). */
 data class AgentEvent(
@@ -97,7 +98,7 @@ class Api(val base: String, val token: String) {
                 val text = (if (code < 400) c.inputStream else c.errorStream)?.bufferedReader()?.use { it.readText() } ?: ""
                 val json = runCatching { JSONObject(text) }.getOrElse { JSONObject().put("text", text) }
                 if (code == 401) throw ApiError("The token was not accepted. Pair again with the token herdr-remote prints.")
-                if (code >= 400) throw ApiError(json.optString("error", "The Mac answered $code."))
+                if (code >= 400) throw ApiError(json.optString("error", "The Mac answered $code."), json.optString("terminal").ifBlank { null })
                 json
             } finally {
                 c.disconnect()
@@ -237,6 +238,30 @@ class Api(val base: String, val token: String) {
         return call("/api/task", body, timeoutMs = 30_000)
             .optString("terminal").ifBlank { throw ApiError("The Mac opened the tab but didn't say which terminal it is.") }
     }
+
+    /** Earlier sessions agents can resume, newest first: in [cwd], or anywhere (Sessions.kt). */
+    suspend fun sessions(cwd: String? = null): EarlierSessions {
+        val o = call("/api/sessions" + (cwd?.let { "?cwd=" + enc(it) } ?: ""), timeoutMs = 15_000)
+        val a = o.optJSONArray("sessions")
+        val list = (0 until (a?.length() ?: 0)).map { i ->
+            a!!.getJSONObject(i).let { s ->
+                EarlierSession(
+                    agent = s.optString("agent"), id = s.optString("id"), title = s.optString("title"),
+                    cwd = s.optString("cwd"), time = s.optLong("time"), messages = s.optInt("messages"),
+                    atLeast = s.optBoolean("estimate"), running = s.optString("running").ifBlank { null },
+                )
+            }
+        }
+        return EarlierSessions(o.optString("home"), list)
+    }
+
+    /**
+     * Opens a tab in a session's folder resuming it; returns its terminal. A
+     * session running already fails with [ApiError.terminal] set to its terminal.
+     */
+    suspend fun resume(agent: String, id: String): String =
+        call("/api/resume", JSONObject().put("agent", agent).put("id", id), timeoutMs = 30_000)
+            .optString("terminal").ifBlank { throw ApiError("The Mac opened the tab but didn't say which terminal it is.") }
 
     /** The models and thinking levels an agent offers (Models.kt). */
     suspend fun models(agent: String): ModelChoices = ModelChoices.from(call("/api/models?agent=" + enc(agent), timeoutMs = 15_000))

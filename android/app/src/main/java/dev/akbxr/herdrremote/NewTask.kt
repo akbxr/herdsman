@@ -107,6 +107,18 @@ fun NewTaskScreen(api: Api, host: String, onBack: () -> Unit, onStarted: (String
     var choices by remember { mutableStateOf<Map<String, ModelChoices>>(emptyMap()) }
     var choicesProblem by remember { mutableStateOf<String?>(null) }
     var modelSheet by remember { mutableStateOf(false) }
+    // Earlier sessions in the picked folder (Sessions.kt): none when the Mac
+    // can't say (an older herdr-remote).
+    var sessions by remember { mutableStateOf<List<EarlierSession>?>(null) }
+    var resuming by remember { mutableStateOf<String?>(null) }
+    var resumeProblem by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(api, picked, attempt) {
+        sessions = null
+        resumeProblem = null
+        val cwd = picked ?: return@LaunchedEffect
+        sessions = runCatching { api.sessions(cwd).list }.getOrDefault(emptyList())
+    }
 
     LaunchedEffect(api, agent, attempt) {
         val id = agent ?: return@LaunchedEffect
@@ -176,6 +188,18 @@ fun NewTaskScreen(api: Api, host: String, onBack: () -> Unit, onStarted: (String
         onPrompt = { prompt = it },
         busy = busy,
         problem = problem,
+        sessions = sessions,
+        resuming = resuming,
+        resumeProblem = resumeProblem,
+        onSession = pick@{ s ->
+            if (busy || resuming != null) return@pick
+            resuming = s.id
+            resumeProblem = null
+            scope.launch {
+                runCatching { resumeOrOpen(api, s, onStarted) }.onFailure { resumeProblem = it.advice() }
+                resuming = null
+            }
+        },
         onBack = onBack,
         onStart = start@{
             val cwd = picked ?: return@start
@@ -217,10 +241,16 @@ fun NewTaskForm(
     onPrompt: (String) -> Unit,
     busy: Boolean,
     problem: String?,
+    sessions: List<EarlierSession>? = null,
+    resuming: String? = null,
+    resumeProblem: String? = null,
+    onSession: (EarlierSession) -> Unit = {},
+    now: Long = System.currentTimeMillis(),
     onBack: () -> Unit,
     onStart: () -> Unit,
 ) {
     val home = folders?.home.orEmpty()
+    var allSessions by rememberSaveable(picked) { mutableStateOf(false) }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 32.dp)) {
         item {
             Row(Modifier.fillMaxWidth().padding(start = 4.dp, end = 12.dp, top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -270,7 +300,33 @@ fun NewTaskForm(
                     }
                     QuietButton("Change", color = Ink.text) { onPick(null) }
                 }
+            }
+        }
 
+        // Earlier sessions here: pick one up instead of starting afresh.
+        if (!sessions.isNullOrEmpty()) {
+            item {
+                Column(Modifier.padding(start = 24.dp, end = 24.dp, top = 22.dp)) {
+                    StepLabel("Earlier sessions here")
+                }
+            }
+            val shown = if (allSessions || sessions.size <= SESSIONS_SHOWN + 1) sessions else sessions.take(SESSIONS_SHOWN)
+            items(shown, key = { "s:" + it.agent + ":" + it.id }) { s ->
+                SessionRow(s, now, folder = null, resuming = resuming == s.id, onClick = { onSession(s) })
+            }
+            if (shown.size < sessions.size) {
+                item {
+                    QuietButton(
+                        "Show ${sessions.size - shown.size} more", color = Ink.text,
+                        modifier = Modifier.padding(start = 12.dp),
+                    ) { allSessions = true }
+                }
+            }
+            resumeProblem?.let { item { Notice(it, Modifier.padding(start = 24.dp, end = 24.dp, top = 8.dp)) } }
+        }
+
+        item {
+            Column(Modifier.padding(horizontal = 24.dp)) {
                 Spacer(Modifier.height(22.dp))
                 StepLabel("Agent")
                 when {
@@ -343,6 +399,9 @@ fun NewTaskForm(
         }
     }
 }
+
+/** Earlier sessions shown in a folder before "Show more". */
+private const val SESSIONS_SHOWN = 3
 
 /** Step one: recent folders, then projects; the filter narrows both, or takes a path. */
 private fun LazyListScope.folderPicker(folders: TaskFolders?, filter: String, onFilter: (String) -> Unit, onPick: (String) -> Unit) {
