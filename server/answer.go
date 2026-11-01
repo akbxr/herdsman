@@ -25,8 +25,9 @@ func (s *server) answer(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Terminal string `json:"terminal"`
 		Seq      int64  `json:"seq"`    // the event the notification showed; 0 = whatever waits now
-		Answer   string `json:"answer"` // allow, deny, reply
+		Answer   string `json:"answer"` // allow, deny, reply, option
 		Text     string `json:"text"`
+		Option   string `json:"option"` // option: the label of the menu choice
 	}
 	if err := decode(r, &req); err != nil || !validTerminal(req.Terminal) {
 		writeErr(w, http.StatusBadRequest, errors.New("need {terminal, answer}"))
@@ -36,8 +37,12 @@ func (s *server) answer(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, errors.New("need text"))
 		return
 	}
-	if req.Answer != "allow" && req.Answer != "deny" && req.Answer != "reply" {
-		writeErr(w, http.StatusBadRequest, errors.New("answer is allow, deny or reply"))
+	if req.Answer != "allow" && req.Answer != "deny" && req.Answer != "reply" && req.Answer != "option" {
+		writeErr(w, http.StatusBadRequest, errors.New("answer is allow, deny, reply or option"))
+		return
+	}
+	if req.Answer == "option" && strings.TrimSpace(req.Option) == "" {
+		writeErr(w, http.StatusBadRequest, errors.New("need option"))
 		return
 	}
 
@@ -54,6 +59,20 @@ func (s *server) answer(w http.ResponseWriter, r *http.Request) {
 		args = []string{"keys", "--json", req.Terminal, "enter"}
 	case cur.State == "blocked" && req.Answer == "deny":
 		args = []string{"keys", "--json", req.Terminal, "esc"}
+	case cur.State == "blocked" && req.Answer == "option":
+		// The menu is read again now: the keys go to the choice as it is on
+		// screen, and nothing is typed when it isn't there anymore.
+		p, err := s.screenPrompt(r.Context(), req.Terminal)
+		if err != nil {
+			writeErr(w, http.StatusBadGateway, err)
+			return
+		}
+		keys := pickKeys(p, req.Option)
+		if keys == nil {
+			writeErr(w, http.StatusConflict, errors.New("That choice isn't on your Mac's screen anymore."))
+			return
+		}
+		args = append([]string{"keys", "--json", req.Terminal}, keys...)
 	case cur.State == "blocked" && req.Answer == "reply":
 		args = []string{"send", "--json", "--force", req.Terminal, req.Text}
 	case (cur.State == "done" || cur.State == "error") && req.Answer == "reply":

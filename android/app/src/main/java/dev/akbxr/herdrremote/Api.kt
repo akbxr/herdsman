@@ -180,8 +180,22 @@ class Api(val base: String, val token: String) {
     }
 
     /** Answers a waiting agent: allow, deny, or reply (text). seq: the event it answers. */
-    suspend fun answer(terminal: String, seq: Long, answer: String, text: String = "") {
-        call("/api/answer", JSONObject().put("terminal", terminal).put("seq", seq).put("answer", answer).put("text", text), timeoutMs = 45_000)
+    suspend fun answer(terminal: String, seq: Long, answer: String, text: String = "", option: String = "") {
+        call(
+            "/api/answer",
+            JSONObject().put("terminal", terminal).put("seq", seq).put("answer", answer).put("text", text).put("option", option),
+            timeoutMs = 45_000,
+        )
+    }
+
+    /** The menu a waiting agent shows on its screen; null when there is none. */
+    suspend fun prompt(terminal: String): Prompt? =
+        call("/api/prompt?terminal=" + enc(terminal)).optJSONObject("prompt")?.let(Prompt::from)?.takeIf { it.options.size >= 2 }
+
+    /** The git changes in the agent's folder (Changes.kt); files null when unchanged since version. */
+    suspend fun changes(terminal: String, version: String = ""): Changes {
+        val q = "terminal=" + enc(terminal) + if (version.isNotEmpty()) "&version=" + enc(version) else ""
+        return Changes.from(call("/api/changes?$q", timeoutMs = 20_000))
     }
 
     suspend fun interrupt(terminal: String) {

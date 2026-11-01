@@ -53,6 +53,17 @@ data class ChatItem(val kind: String, val text: String = "", val tools: List<Cha
 
 data class ChatTool(val name: String, val detail: String, val result: String, val error: Boolean)
 
+/** The menu a waiting agent shows: its question and choices, one selected. */
+data class Prompt(val question: String, val options: List<String>, val selected: Int) {
+    companion object {
+        fun from(o: JSONObject) = Prompt(
+            question = o.optString("question"),
+            options = o.optJSONArray("options")?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: emptyList(),
+            selected = o.optInt("selected"),
+        )
+    }
+}
+
 /** A "/" suggestion. */
 data class Command(val name: String, val help: String)
 
@@ -103,7 +114,11 @@ fun ChatView(
     status: AgentEvent?,
     agentName: String,
     modifier: Modifier = Modifier,
+    prompt: Prompt? = null,               // the menu on its screen, when it waits for you
+    pending: List<String> = emptyList(),  // sent from here, not in the transcript yet
+    loading: Boolean = false,
     onAnswer: (String) -> Unit,
+    onOption: (String) -> Unit = {},
     onOpenTerminal: () -> Unit,
 ) {
     val list = rememberLazyListState()
@@ -113,14 +128,22 @@ fun ChatView(
             last == null || last.index >= list.layoutInfo.totalItemsCount - 2
         }
     }
-    val tail = items.size + (if (status != null) 1 else 0)
+    val working = status?.state == "working"
+    // A tool call without its result while the agent works: running now.
+    val running = working && items.lastOrNull()?.let { it.kind == "tools" && it.tools.lastOrNull()?.result.isNullOrEmpty() } == true
+    val foot = status != null && status.state in setOf("working", "blocked", "error") && !running
+    val tail = items.size + pending.size + (if (foot) 1 else 0)
     var first by remember { mutableStateOf(true) }
     LaunchedEffect(tail, items.lastOrNull()) {
         if (tail == 0) return@LaunchedEffect
         if (first) { list.scrollToItem(tail - 1); first = false }
         else if (atBottom) list.animateScrollToItem(tail - 1)
     }
-    if (items.isEmpty() && status == null) {
+    if (loading && items.isEmpty()) {
+        SkeletonList(modifier)
+        return
+    }
+    if (items.isEmpty() && status == null && pending.isEmpty()) {
         Box(modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
             Text("Nothing said yet. Write to $agentName below.", style = Type.small, color = Ink.dust)
         }
@@ -133,24 +156,23 @@ fun ChatView(
             verticalArrangement = Arrangement.spacedBy(12.dp),
             modifier = Modifier.fillMaxSize(),
         ) {
-            itemsIndexed(items, key = { i, _ -> i }) { _, it ->
+            itemsIndexed(items, key = { i, _ -> i }) { i, it ->
                 when (it.kind) {
                     "user" -> UserBubble(it.text)
                     "assistant" -> Markdown(it.text)
-                    "tools" -> ToolRun(it.tools)
+                    "tools" -> ToolRun(it.tools, running = running && i == items.lastIndex)
                     else -> NoteLine(it.text)
                 }
             }
-            if (status != null && status.state in setOf("working", "blocked", "error")) {
-                item(key = "status") { StatusFoot(status, agentName, onAnswer, onOpenTerminal) }
-            }
+            itemsIndexed(pending, key = { i, _ -> "pending$i" }) { _, text -> UserBubble(text, sending = true) }
+            if (foot) item(key = "status") { StatusFoot(status!!, agentName, prompt, onAnswer, onOption, onOpenTerminal) }
         }
     }
 }
 
 @Composable
-private fun UserBubble(text: String) {
-    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
+private fun UserBubble(text: String, sending: Boolean = false) {
+    Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.End) {
         Box(
             Modifier
                 .widthIn(max = 310.dp)
@@ -158,7 +180,8 @@ private fun UserBubble(text: String) {
                 .background(Ink.pen)
                 .border(1.dp, Ink.rule, RoundedCornerShape(16.dp, 16.dp, 4.dp, 16.dp))
                 .padding(horizontal = 14.dp, vertical = 10.dp),
-        ) { Text(text, style = Type.body, color = Ink.text) }
+        ) { Text(text, style = Type.body, color = if (sending) Ink.text.copy(alpha = 0.7f) else Ink.text) }
+        if (sending) Text("Sent", style = Type.small.copy(fontSize = 11.sp), color = Ink.dust, modifier = Modifier.padding(top = 3.dp, end = 4.dp))
     }
 }
 
@@ -173,7 +196,7 @@ private fun NoteLine(text: String) {
 
 /** A run of tool calls, folded to one line: tap to see each. */
 @Composable
-private fun ToolRun(tools: List<ChatTool>) {
+private fun ToolRun(tools: List<ChatTool>, running: Boolean = false) {
     var open by rememberSaveable(tools.size, tools.firstOrNull()?.detail) { mutableStateOf(false) }
     val failed = tools.count { it.error }
     val names = tools.map { it.name }.distinct()
@@ -189,9 +212,19 @@ private fun ToolRun(tools: List<ChatTool>) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(if (open) "▾" else "▸", style = Type.label, color = Ink.dust)
             Spacer(Modifier.width(8.dp))
-            val head = if (tools.size == 1) "${tools[0].name}  ${tools[0].detail}" else "${tools.size} tool calls · ${names.take(4).joinToString(", ")}${if (names.size > 4) "…" else ""}"
-            Text(head, style = Type.small.copy(fontFamily = JetBrains, fontSize = 12.sp), color = Ink.dust,
-                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            val mono = Type.small.copy(fontFamily = JetBrains, fontSize = 12.sp)
+            if (running) {
+                // What runs now, in the light that says it's still going.
+                val now = tools.last()
+                ShimmerText("${now.name}  ${now.detail}".trim(), mono, base = Ink.blue, light = Ink.text, modifier = Modifier.weight(1f))
+            } else {
+                val head = if (tools.size == 1) "${tools[0].name}  ${tools[0].detail}" else "${tools.size} tool calls · ${names.take(4).joinToString(", ")}${if (names.size > 4) "…" else ""}"
+                Text(head, style = mono, color = Ink.dust, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            }
+            if (running && tools.size > 1) {
+                Spacer(Modifier.width(8.dp))
+                Text("${tools.size}", style = Type.label, color = Ink.dust)
+            }
             if (failed > 0) {
                 Spacer(Modifier.width(8.dp))
                 Text(if (failed == 1) "1 failed" else "$failed failed", style = Type.label, color = Ink.red)
@@ -219,12 +252,19 @@ private fun ToolRun(tools: List<ChatTool>) {
 }
 
 @Composable
-private fun StatusFoot(status: AgentEvent, agentName: String, onAnswer: (String) -> Unit, onOpenTerminal: () -> Unit) {
+private fun StatusFoot(
+    status: AgentEvent,
+    agentName: String,
+    prompt: Prompt?,
+    onAnswer: (String) -> Unit,
+    onOption: (String) -> Unit,
+    onOpenTerminal: () -> Unit,
+) {
     when (status.state) {
         "working" -> Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
             Box(Modifier.size(8.dp).clip(CircleShape).background(Ink.blue))
             Spacer(Modifier.width(10.dp))
-            Text(status.msg.ifBlank { "Working…" }, style = Type.small, color = Ink.blue, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            ShimmerText("Thinking…", Type.small, base = Ink.blue, light = Ink.text)
         }
         "error" -> Text("Stopped with an error" + (status.msg.takeIf { it.isNotBlank() }?.let { ": $it" } ?: "."), style = Type.small, color = Ink.red)
         "blocked" -> Column(
@@ -236,7 +276,18 @@ private fun StatusFoot(status: AgentEvent, agentName: String, onAnswer: (String)
                 .padding(14.dp),
         ) {
             Text("$agentName needs you", style = Type.label, color = Ink.yellow)
-            if (status.msg.isNotBlank()) Text(status.msg, style = Type.body, color = Ink.text, modifier = Modifier.padding(top = 4.dp))
+            val question = status.msg.ifBlank { prompt?.question.orEmpty() }
+            if (question.isNotBlank()) Text(question, style = Type.body, color = Ink.text, modifier = Modifier.padding(top = 4.dp))
+            if (prompt != null) {
+                // The choices on its screen, as they are there.
+                Column(Modifier.padding(top = 10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    prompt.options.forEachIndexed { i, option ->
+                        OptionButton(option, highlighted = i == prompt.selected) { onOption(option) }
+                    }
+                }
+                QuietButton("Terminal", color = Ink.dust, modifier = Modifier.padding(top = 4.dp), onClick = onOpenTerminal)
+                return@Column
+            }
             Row(Modifier.padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 if (status.kind == "permission") {
                     PrimaryButton("Allow") { onAnswer("allow") }
@@ -246,6 +297,19 @@ private fun StatusFoot(status: AgentEvent, agentName: String, onAnswer: (String)
             }
         }
     }
+}
+
+@Composable
+private fun OptionButton(text: String, highlighted: Boolean, onClick: () -> Unit) {
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(if (highlighted) Ink.yellow.copy(alpha = 0.18f) else Ink.pen)
+            .border(1.dp, if (highlighted) Ink.yellow.copy(alpha = 0.6f) else Ink.rule, RoundedCornerShape(10.dp))
+            .clickable(role = Role.Button, onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 11.dp),
+    ) { Text(text, style = Type.label, color = Ink.text) }
 }
 
 /**

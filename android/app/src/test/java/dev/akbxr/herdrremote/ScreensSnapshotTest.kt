@@ -128,11 +128,16 @@ class ScreensSnapshotTest {
         AgentEvent(seq = 7, terminal = "t12", state = state, kind = kind, msg = msg, app = "tego", where = "~ / 1")
 
     @Composable
-    private fun ChatScreen(status: AgentEvent?, message: String = "", suggestions: List<Pair<String, String>> = emptyList()) {
+    private fun ChatScreen(
+        status: AgentEvent?, message: String = "", suggestions: List<Pair<String, String>> = emptyList(),
+        items: List<ChatItem> = chatItems, prompt: Prompt? = null, pending: List<String> = emptyList(),
+        mode: String = "chat", changes: Changes? = null,
+    ) {
         AgentContent(
-            mode = "chat", chatAvailable = true, suggestions = suggestions,
+            mode = mode, chatAvailable = true, suggestions = suggestions,
             snippets = Snippets.DEFAULT,
-            chatSlot = { ChatView(chatItems, status, "tego", onAnswer = {}, onOpenTerminal = {}) },
+            chatSlot = { ChatView(items, status, "tego", prompt = prompt, pending = pending, onAnswer = {}, onOpenTerminal = {}) },
+            changesSlot = { ChangesView(changes, changes?.files.orEmpty()) },
             terminal = "t12", agent = herd.agents[0], status = TermStatus(), ctrl = false, problem = null,
             message = message, onMessage = {}, attachments = emptyList(), sending = false, refused = false,
             onBack = {}, onMore = {}, onAttach = {}, onRemove = {}, onSend = {}, onKey = {},
@@ -142,6 +147,53 @@ class ScreensSnapshotTest {
     @Test fun chatWorking() = paparazzi.snapshot { Frame { ChatScreen(event("working", msg = "Running the tests")) } }
 
     @Test fun chatNeedsYou() = paparazzi.snapshot { Frame { ChatScreen(event("blocked", "permission", "Allow bash: npm test -- login?")) } }
+
+    @Test fun chatPrompt() = paparazzi.snapshot {
+        Frame {
+            ChatScreen(
+                event("blocked", "permission", ""),
+                prompt = Prompt("Do you want to proceed?", listOf("Yes", "Yes, and don't ask again for npm test", "No, and tell tego what to do differently"), 0),
+            )
+        }
+    }
+
+    @Test fun chatRunning() = paparazzi.snapshot {
+        Frame {
+            ChatScreen(
+                event("working"),
+                items = chatItems.take(4) + ChatItem("tools", tools = listOf(ChatTool("read", "src/login.tsx", "ok", false), ChatTool("bash", "npm test -- login", "", false))),
+                pending = listOf("also check the signup form"),
+            )
+        }
+    }
+
+    @Test fun changes() = paparazzi.snapshot {
+        Frame {
+            ChatScreen(
+                event("working"), mode = "changes",
+                changes = Changes(
+                    repo = true, root = "/p", branch = "main", more = 0, version = "v",
+                    files = listOf(
+                        ChangedFile("src/login.tsx", "M", 3, 1, false, "@@ -38,7 +38,9 @@ export function Login() {\n   const [email, setEmail] = useState(\"\")\n-  if (error) resetForm()\n+  if (error) {\n+    setPassword(\"\")\n+  }\n   return (", false),
+                        ChangedFile("src/login.test.tsx", "?", 24, 0, false, "@@ -0,0 +1,24 @@\n+import { render } from \"@testing-library/react\"", false),
+                        ChangedFile("public/logo.png", "M", 0, 0, true, "", false),
+                    ),
+                ),
+            )
+        }
+    }
+
+    @Test fun chatLoading() = paparazzi.snapshot {
+        Frame {
+            AgentContent(
+                mode = "chat", chatAvailable = true, snippets = Snippets.DEFAULT,
+                chatSlot = { ChatView(emptyList(), null, "tego", loading = true, onAnswer = {}, onOpenTerminal = {}) },
+                terminal = "t12", agent = herd.agents[0], status = TermStatus(), ctrl = false, problem = null,
+                message = "", onMessage = {}, attachments = emptyList(), sending = false, refused = false,
+                onBack = {}, onMore = {}, onAttach = {}, onRemove = {}, onSend = {}, onKey = {},
+            ) {}
+        }
+    }
 
     @Test fun chatCommands() = paparazzi.snapshot {
         Frame {

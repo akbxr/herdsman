@@ -104,8 +104,15 @@ The phone needs Tailscale on too, signed in to the same account.
 - **Chat** (tap an agent's tag): its conversation, read from the agent's own
   transcript: what you asked, its answers in Markdown, and the tools it ran
   folded into one line each run (tap to see commands, results, failures).
-  Below it, what it does now; when it asks for approval, **Allow** and
-  **Deny** answer from there. Works for tego, Claude Code and Codex (a shell
+  Below it, what it does now: the tool running at the moment, or "Thinking…",
+  in a moving shimmer; a message you send shows at once ("Sent") until the
+  transcript has it. When it asks something, the choices of the menu on its
+  screen ("Yes", "Yes, and don't ask again", "No…") are buttons; the Mac
+  reads the menu again before pressing ↑/↓ and Enter, and types nothing if it
+  changed.
+- **Changes**: what is uncommitted in the agent's folder (git, against the
+  last commit, new files included): each file with +/− counts, tap for its
+  diff. Works for tego, Claude Code and Codex (a shell
   has no chat and opens on its terminal). **Chat | Terminal** at the top
   switches.
 
@@ -132,7 +139,9 @@ The phone needs Tailscale on too, signed in to the same account.
 - **Notifications** (turn them on at the bottom of the herd): when an agent
   needs you, finishes or stops with an error, in its own words ("Allow
   `rm -rf build`?", the first line of its answer). Tap one to open that
-  terminal. Nothing is posted while the app is on screen.
+  terminal. Nothing is posted while the app is on screen. A needs-you
+  notification gets the menu's choices as buttons (three at most; Allow and
+  Deny when no menu is found), finished or failed ones a Reply.
 
   There is no push service: a foreground service on the phone waits on the
   Mac's `/api/events` over Tailscale, with a quiet "Watching your Mac"
@@ -166,8 +175,10 @@ All under `/api`, with `Authorization: Bearer <token>` (except `/pair`):
 | GET | `/attach?terminal=t12&cols=&rows=&token=` | WebSocket: `hc attach` in a PTY; binary frames are terminal bytes both ways, text frames `{"type":"size"}` (server) and `{"type":"resize"}`, `{"type":"reply"}` (phone) |
 | POST | `/upload?terminal=t12&name=x.png` | body = the file; `hc put` places it beside the terminal → `{path, bytes}` |
 | GET | `/events?after=41&wait=25` | long poll for agents' status changes → `{seq, events}`; without `after`: `{seq, current}` |
-| POST | `/answer` | `{terminal, seq, answer: allow\|deny\|reply, text?}`: answers a waiting agent; 409 when the prompt is gone |
+| POST | `/answer` | `{terminal, seq, answer: allow\|deny\|reply\|option, text?, option?}`: answers a waiting agent; 409 when the prompt is gone |
 | GET | `/chat?terminal=t12&version=` | the agent's conversation from its transcript → `{agent, source, version, items, status}`; `same: true` when unchanged |
+| GET | `/prompt?terminal=t12` | the menu on the terminal's screen → `{prompt: {question, options, selected}}` or `null` |
+| GET | `/changes?terminal=t12&version=` | uncommitted git changes in the agent's folder: files with status, counts and patch |
 | GET | `/commands?terminal=t12` | the agent's slash commands, custom commands and skills |
 | GET | `/files?terminal=t12&q=att` | files in the agent's folder, best matches first |
 

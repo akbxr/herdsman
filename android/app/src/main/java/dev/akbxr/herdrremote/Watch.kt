@@ -104,6 +104,7 @@ class WatchService : Service() {
     // A network change (Tailscale back on) cuts a wait between tries short.
     private val kick = Channel<Unit>(Channel.CONFLATED)
     private var stopWatchingNet: () -> Unit = {}
+    private var api: Api? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -132,7 +133,7 @@ class WatchService : Service() {
     private suspend fun watch() {
         val p = Pairing(this)
         if (!p.notify || p.address.isEmpty()) { stopSelf(); return }
-        val api = Api(p.address, p.token)
+        val api = Api(p.address, p.token).also { this.api = it }
         var cursor: Long? = null
         var failures = 0
         while (scope.isActive) {
@@ -178,6 +179,14 @@ class WatchService : Service() {
                 if (Watch.appVisible || !Watch.canNotify(this)) return
                 @SuppressLint("MissingPermission")  // checked by canNotify
                 nm.notify(id, build(e))
+                // The menu it shows, once drawn: its real choices as the buttons.
+                if (e.state == "blocked") scope.launch {
+                    delay(700)
+                    val prompt = runCatching { api?.prompt(e.terminal) }.getOrNull() ?: return@launch
+                    if (notified[e.terminal] != key || Watch.appVisible || !Watch.canNotify(this@WatchService)) return@launch
+                    @SuppressLint("MissingPermission")
+                    nm.notify(id, build(e, prompt))
+                }
             }
             else -> {
                 // Working again, idle, cleared or ended: whatever was shown is out of date.
@@ -187,14 +196,14 @@ class WatchService : Service() {
         }
     }
 
-    private fun build(e: AgentEvent): Notification {
+    private fun build(e: AgentEvent, prompt: Prompt? = null): Notification {
         val name = e.app.ifBlank { e.terminal }
         val (channel, title, color) = when (e.state) {
             "blocked" -> Triple(Watch.CH_NEEDS, "$name needs you", 0xFFE0AF68.toInt())
             "error" -> Triple(Watch.CH_FINISHED, "$name stopped with an error", 0xFFF7768E.toInt())
             else -> Triple(Watch.CH_FINISHED, "$name finished", 0xFF9ECE6A.toInt())
         }
-        val text = e.msg.ifBlank {
+        val text = prompt?.question?.takeIf { it.isNotBlank() && e.msg.isBlank() } ?: e.msg.ifBlank {
             when (e.kind) {
                 "permission" -> "Waiting for your approval."
                 "question" -> "Waiting for your answer."
@@ -221,7 +230,8 @@ class WatchService : Service() {
             .setContentIntent(open)
             .setAutoCancel(true)
             .setGroup("agents")
-            .apply { Answer.actions(this@WatchService, e, title).forEach(::addAction) }
+            .setOnlyAlertOnce(prompt != null)  // the menu's buttons come a moment later: one sound
+            .apply { Answer.actions(this@WatchService, e, title, prompt).forEach(::addAction) }
             .build()
     }
 

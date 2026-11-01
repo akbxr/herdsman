@@ -30,18 +30,27 @@ object Answer {
     private const val EXTRA_SEQ = "seq"
     private const val EXTRA_ANSWER = "answer"
     private const val EXTRA_TITLE = "title"
+    private const val EXTRA_OPTION = "option"
 
-    /** The buttons for a notification about e. */
-    fun actions(context: Context, e: AgentEvent, title: String): List<NotificationCompat.Action> {
-        fun intent(answer: String, mutable: Boolean = false): PendingIntent {
+    /** Choices that say no: they don't need the phone unlocked. */
+    private fun declines(option: String) = Regex("""^(no|deny|reject|cancel|don't)\b""", RegexOption.IGNORE_CASE).containsMatchIn(option)
+
+    /**
+     * The buttons for a notification about e. With the menu on the agent's
+     * screen ([prompt]), its choices (Android shows three at most); without,
+     * Allow and Deny for an approval, Reply otherwise.
+     */
+    fun actions(context: Context, e: AgentEvent, title: String, prompt: Prompt? = null): List<NotificationCompat.Action> {
+        fun intent(answer: String, mutable: Boolean = false, option: String = "", slot: Int = 0): PendingIntent {
             val i = Intent(context, AnswerReceiver::class.java)
-                .setAction("$ACTION.$answer")
+                .setAction("$ACTION.$answer.$slot")
                 .putExtra(EXTRA_TERMINAL, e.terminal)
                 .putExtra(EXTRA_SEQ, e.seq)
                 .putExtra(EXTRA_ANSWER, answer)
                 .putExtra(EXTRA_TITLE, title)
-            // One request code per terminal and answer: a later notification replaces the extras.
-            val code = (e.terminal + answer).hashCode()
+                .putExtra(EXTRA_OPTION, option)
+            // One request code per terminal, answer and button: a later notification replaces the extras.
+            val code = (e.terminal + answer + slot).hashCode()
             val flags = PendingIntent.FLAG_UPDATE_CURRENT or
                 (if (mutable) PendingIntent.FLAG_MUTABLE else PendingIntent.FLAG_IMMUTABLE)
             return PendingIntent.getBroadcast(context, code, i, flags)
@@ -56,6 +65,13 @@ object Answer {
             .setAllowGeneratedReplies(false)
             .setAuthenticationRequired(true)
             .build()
+        if (e.state == "blocked" && prompt != null && prompt.options.size >= 2) {
+            return prompt.options.take(3).mapIndexed { slot, option ->
+                NotificationCompat.Action.Builder(R.drawable.ic_stat_tag, option, intent("option", option = option, slot = slot))
+                    .setAuthenticationRequired(!declines(option))
+                    .build()
+            }
+        }
         return when {
             e.state == "blocked" && e.kind == "permission" -> listOf(
                 NotificationCompat.Action.Builder(R.drawable.ic_stat_tag, "Allow", intent("allow"))
@@ -73,6 +89,7 @@ object Answer {
         val seq = intent.getLongExtra(EXTRA_SEQ, 0)
         val answer = intent.getStringExtra(EXTRA_ANSWER).orEmpty()
         val title = intent.getStringExtra(EXTRA_TITLE).orEmpty()
+        val option = intent.getStringExtra(EXTRA_OPTION).orEmpty()
         val text = RemoteInput.getResultsFromIntent(intent)?.getCharSequence(KEY_REPLY)?.toString().orEmpty()
         val p = Pairing(context)
         if (terminal.isEmpty() || p.address.isEmpty() || (answer == "reply" && text.isBlank())) { done(); return }
@@ -86,7 +103,7 @@ object Answer {
         scope.launch { delay(8_000); finish() }
         scope.launch {
             try {
-                Api(p.address, p.token).answer(terminal, seq, answer, text)
+                Api(p.address, p.token).answer(terminal, seq, answer, text, option)
                 // The agent moves on and the watch takes the notification away;
                 // this is for a reply, whose notification would spin until then.
                 nm.cancel(id)

@@ -144,7 +144,42 @@ fun AgentScreen(api: Api, terminal: String, agent: Agent?, appScope: CoroutineSc
                 .onFailure { if (mode == "chat") chatProblem = it.advice(link) }
             chatTried = true
             if (mode != "chat") break
-            delay(1500)
+            // Closer while it works: each tool call shows as it starts.
+            delay(if (chat?.status?.state == "working") 900 else 2000)
+        }
+    }
+
+    // Messages sent from the chat show at once, until the transcript has them.
+    val pending = remember(terminal) { mutableStateListOf<Pair<String, Long>>() }
+    LaunchedEffect(chatItems, pending.size) {
+        val recent = chatItems.takeLast(12).filter { it.kind == "user" }.map { it.text }
+        val now = System.currentTimeMillis()
+        pending.removeAll { (text, at) -> now - at > 120_000 || recent.any { r -> r.contains(text.take(60).trim()) } }
+    }
+
+    // The menu a waiting agent shows: its real choices (Chat.kt, Answer.kt).
+    var prompt by remember(terminal) { mutableStateOf<Prompt?>(null) }
+    val blockedSeq = chat?.status?.takeIf { it.state == "blocked" }?.seq
+    LaunchedEffect(terminal, blockedSeq, mode == "chat") {
+        prompt = null
+        if (blockedSeq == null || mode != "chat") return@LaunchedEffect
+        delay(400)  // the menu is drawn just after the status says so
+        while (true) {
+            runCatching { api.prompt(terminal) }.onSuccess { prompt = it }
+            delay(2500)
+        }
+    }
+
+    // Changes: the git diff of the agent's folder (Changes.kt), while that tab shows.
+    var changes by remember(terminal) { mutableStateOf<Changes?>(null) }
+    var changedFiles by remember(terminal) { mutableStateOf<List<ChangedFile>>(emptyList()) }
+    LaunchedEffect(terminal, onScreen, mode == "changes") {
+        if (!onScreen || mode != "changes") return@LaunchedEffect
+        while (true) {
+            runCatching { api.changes(terminal, changes?.version.orEmpty()) }
+                .onSuccess { c -> c.files?.let { changedFiles = it }; changes = c; chatProblem = null }
+                .onFailure { chatProblem = it.advice(link) }
+            delay(4000)
         }
     }
 
@@ -222,7 +257,10 @@ fun AgentScreen(api: Api, terminal: String, agent: Agent?, appScope: CoroutineSc
         problem = null
         scope.launch {
             runCatching { api.send(terminal, text, force) }
-                .onSuccess { setMessage(""); attachments.clear(); refused = false }
+                .onSuccess {
+                    setMessage(""); attachments.clear(); refused = false
+                    if (mode == "chat") pending += text to System.currentTimeMillis()
+                }
                 .onFailure {
                     // hc send won't type into a program that is asking something.
                     if (!force && agent?.state == State.NeedsYou) {
@@ -268,11 +306,24 @@ fun AgentScreen(api: Api, terminal: String, agent: Agent?, appScope: CoroutineSc
         onEditSnippet = { editing = it },
         onAddSnippet = { editing = -1 },
         onEsc = { scope.launch { runCatching { api.keys(terminal, "esc") }.onFailure { problem = it.advice() } } },
+        changesSlot = { ChangesView(changes, changedFiles) },
         chatSlot = {
             ChatView(
                 items = chatItems,
                 status = chat?.status,
                 agentName = agent?.title ?: chat?.agent?.ifBlank { null } ?: terminal,
+                prompt = prompt,
+                pending = pending.map { it.first },
+                loading = chat == null,
+                onOption = { option ->
+                    val st = chat?.status
+                    prompt = null
+                    scope.launch {
+                        runCatching { api.answer(terminal, st?.seq ?: 0, "option", option = option) }
+                            .onSuccess { chat = chat?.copy(status = null) }
+                            .onFailure { problem = it.advice() }
+                    }
+                },
                 onAnswer = { answer ->
                     val st = chat?.status
                     scope.launch {
@@ -374,6 +425,7 @@ fun AgentContent(
     onAddSnippet: () -> Unit = {},
     onEsc: () -> Unit = {},
     chatSlot: @Composable () -> Unit = {},
+    changesSlot: @Composable () -> Unit = {},
     field: TextFieldValue? = null,                  // the box's text and cursor; null: message, cursor at its end
     onField: ((TextFieldValue) -> Unit)? = null,
     link: Link = Link.Up,
@@ -415,14 +467,17 @@ fun AgentContent(
                     style = Type.small, color = agent?.state?.takeIf { it != State.Idle }?.tagColor() ?: Ink.dust, maxLines = 1,
                 )
             }
-            if (chatAvailable) ModeToggle(mode, onMode)
             if (agent != null) {
                 IconKey(onClick = onMore) { Icon(Icons.Filled.MoreVert, contentDescription = "Split, zoom, rename, close", tint = Ink.text) }
             }
         }
 
+        ViewTabs(mode, chatAvailable, onMode)
+
         if (mode == "chat") {
             Box(Modifier.weight(1f).fillMaxWidth()) { chatSlot() }
+        } else if (mode == "changes") {
+            Box(Modifier.weight(1f).fillMaxWidth()) { changesSlot() }
         } else if (mode == "loading") {
             Box(Modifier.weight(1f).fillMaxWidth())
         } else
@@ -536,7 +591,7 @@ fun AgentContent(
         }
 
         // The chat's quick replies, or the terminal's key bar.
-        if (mode == "chat") SnippetRow(snippets, onSnippet, onEditSnippet, onAddSnippet, onEsc)
+        if (mode != "terminal") SnippetRow(snippets, onSnippet, onEditSnippet, onAddSnippet, onEsc)
         else Row(
             Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp, vertical = 8.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -560,27 +615,28 @@ fun AgentContent(
     }
 }
 
-/** Chat or Terminal, at the top. */
+/** Chat, Changes, Terminal: under the heading, the one showing underlined. */
 @Composable
-private fun ModeToggle(mode: String, onMode: (String) -> Unit) {
-    Row(
-        Modifier
-            .padding(end = 2.dp)
-            .clip(RoundedCornerShape(10.dp))
-            .border(1.dp, Ink.rule, RoundedCornerShape(10.dp))
-            .padding(2.dp),
-    ) {
-        listOf("chat" to "Chat", "terminal" to "Terminal").forEach { (key, label) ->
+private fun ViewTabs(mode: String, chatAvailable: Boolean, onMode: (String) -> Unit) {
+    val tabs = listOfNotNull("chat" to "Chat", "changes" to "Changes", "terminal" to "Terminal").filter { it.first != "chat" || chatAvailable }
+    Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
+        tabs.forEach { (key, label) ->
             val on = mode == key
-            Box(
+            Column(
                 Modifier
+                    .weight(1f)
                     .clip(RoundedCornerShape(8.dp))
-                    .background(if (on) Ink.pen else Color.Transparent)
                     .clickable(role = Role.Tab) { onMode(key) }
-                    .padding(horizontal = 10.dp, vertical = 7.dp),
-            ) { Text(label, style = Type.label, color = if (on) Ink.text else Ink.dust) }
+                    .padding(top = 8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text(label, style = Type.label, color = if (on) Ink.text else Ink.dust)
+                Spacer(Modifier.height(8.dp))
+                Box(Modifier.fillMaxWidth(0.5f).height(2.dp).clip(RoundedCornerShape(1.dp)).background(if (on) Ink.text else Color.Transparent))
+            }
         }
     }
+    Box(Modifier.fillMaxWidth().height(1.dp).background(Ink.rule))
 }
 
 @Composable
