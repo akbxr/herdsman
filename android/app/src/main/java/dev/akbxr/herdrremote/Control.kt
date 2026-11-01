@@ -59,28 +59,34 @@ fun ActionSheet(title: String, subtitle: String? = null, actions: List<SheetActi
         contentColor = Ink.text,
         dragHandle = { Box(Modifier.padding(top = 10.dp, bottom = 6.dp).width(36.dp).height(4.dp).clip(RoundedCornerShape(2.dp)).background(Ink.rule)) },
     ) {
-        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).navigationBarsPadding().padding(bottom = 12.dp)) {
-            Column(Modifier.padding(horizontal = 24.dp, vertical = 8.dp)) {
-                Text(title, style = Type.title, color = Ink.text)
-                subtitle?.let { Text(it, style = Type.small, color = Ink.dust) }
-            }
-            actions.forEach { a ->
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = 52.dp)
-                        .clickable(role = Role.Button) { a.run() }
-                        .padding(horizontal = 24.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text(a.label, style = Type.body.copy(fontWeight = Type.label.fontWeight), color = if (a.danger) Ink.red else Ink.text)
-                        a.detail?.let { Text(it, style = Type.small, color = Ink.dust) }
-                    }
+        ActionSheetContent(title, subtitle, actions, Modifier.navigationBarsPadding(), extra)
+    }
+}
+
+/** What [ActionSheet] shows, without its window (also for snapshots). */
+@Composable
+fun ActionSheetContent(title: String, subtitle: String?, actions: List<SheetAction>, modifier: Modifier = Modifier, extra: @Composable () -> Unit = {}) {
+    Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).then(modifier).padding(bottom = 12.dp)) {
+        Column(Modifier.padding(horizontal = 24.dp, vertical = 8.dp)) {
+            Text(title, style = Type.title, color = Ink.text)
+            subtitle?.let { Text(it, style = Type.small, color = Ink.dust) }
+        }
+        actions.forEach { a ->
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 52.dp)
+                    .clickable(role = Role.Button) { a.run() }
+                    .padding(horizontal = 24.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(a.label, style = Type.body.copy(fontWeight = Type.label.fontWeight), color = if (a.danger) Ink.red else Ink.text)
+                    a.detail?.let { Text(it, style = Type.small, color = Ink.dust) }
                 }
             }
-            extra()
         }
+        extra()
     }
 }
 
@@ -150,19 +156,19 @@ fun PaneActions(
         onDismiss()
         scope.launch { runCatching { block() }.onSuccess { done() }.onFailure { onProblem(it.advice()) } }
     }
-    val where = "${agent.title} · Tab ${agent.tabName} · ${agent.terminal}"
+    // A herdr CLI pane: herdr's own methods; a split there opens a shell.
+    val cli = agent.cli
     when (step) {
         "menu" -> ActionSheet(
-            title = agent.title, subtitle = where, onDismiss = onDismiss,
-            actions = listOf(
-                SheetAction("Show on Mac", "Bring this tab up in the Herdr window") { act { api.showTab(agent.tabId, agent.spaceId) } },
-                SheetAction("Split right", "A new pane beside this one") { step = "split-right" },
-                SheetAction("Split down", "A new pane under this one") { step = "split-down" },
-                SheetAction("Zoom", "Show only this pane in its tab, or all again") { act { api.zoom(agent.pane) } },
-                SheetAction("Rename tab") { step = "rename" },
-                SheetAction("Close pane", "Ends ${agent.title} in it", danger = true) { step = "close-pane" },
-                SheetAction("Close tab", "Ends every terminal in Tab ${agent.tabName}", danger = true) { step = "close-tab" },
-            ),
+            title = agent.title, subtitle = paneWhere(agent), onDismiss = onDismiss,
+            actions = paneMenu(agent) { pick ->
+                when (pick) {
+                    "show" -> act { if (cli) api.herdrShow(agent.tabId, agent.spaceId) else api.showTab(agent.tabId, agent.spaceId) }
+                    "zoom" -> act { api.zoom(agent.pane) }
+                    "split-right", "split-down" -> if (cli) act { api.herdrSplit(agent.pane, pick.removePrefix("split-")) } else step = pick
+                    else -> step = pick
+                }
+            },
         )
         "split-right", "split-down" -> ProgramSheet(
             title = if (step == "split-right") "Split right" else "Split down",
@@ -170,17 +176,47 @@ fun PaneActions(
             onPick = { p -> act { api.split(agent.pane, if (step == "split-right") "right" else "down", p.argv) } },
             onDismiss = onDismiss,
         )
-        "rename" -> RenameDialog(agent.tabName.takeUnless { it.matches(Regex("\\d+")) } ?: "", { name -> act { api.renameTab(agent.tabId, name) } }, onDismiss)
+        "rename" -> RenameDialog(agent.tabName.takeUnless { it.matches(Regex("\\d+")) } ?: "", { name ->
+            act { if (cli) api.herdrRenameTab(agent.tabId, name) else api.renameTab(agent.tabId, name) }
+        }, onDismiss)
         "close-pane" -> ConfirmDialog(
             "Close this pane?", "${agent.title} (${agent.terminal}) ends, and its pane leaves Tab ${agent.tabName}.", "Close pane",
-            onConfirm = { act(onClosed) { api.closePane(agent.pane) } }, onDismiss = onDismiss,
+            onConfirm = { act(onClosed) { if (cli) api.herdrClosePane(agent.pane) else api.closePane(agent.pane) } }, onDismiss = onDismiss,
         )
         "close-tab" -> ConfirmDialog(
             "Close Tab ${agent.tabName}?", "Every terminal in it ends, ${agent.title} included.", "Close tab",
-            onConfirm = { act(onClosed) { api.closeTab(agent.tabId) } }, onDismiss = onDismiss,
+            onConfirm = { act(onClosed) { if (cli) api.herdrCloseTab(agent.tabId) else api.closeTab(agent.tabId) } }, onDismiss = onDismiss,
         )
     }
 }
+
+/** Where a pane is, under its name in the sheet: "tego · Tab 1 · t12", or "api / Tab 2 · herdr:wF:p2". */
+fun paneWhere(agent: Agent): String =
+    if (agent.cli) "${agent.spaceName} / Tab ${agent.tabName} · ${agent.terminal}"
+    else "${agent.title} · Tab ${agent.tabName} · ${agent.terminal}"
+
+/**
+ * The pane sheet's actions; [onPick] gets which: show, split-right,
+ * split-down, zoom, rename, close-pane, close-tab. A herdr CLI pane has no
+ * zoom, and its splits open a shell at once.
+ */
+fun paneMenu(agent: Agent, onPick: (String) -> Unit): List<SheetAction> = if (agent.cli) listOf(
+    SheetAction("Show in herdr", "Bring this tab up in herdr on the Mac") { onPick("show") },
+    SheetAction("Split right", "A new shell beside this pane") { onPick("split-right") },
+    SheetAction("Split down", "A new shell under this pane") { onPick("split-down") },
+    SheetAction("Rename tab") { onPick("rename") },
+    // Its name is its terminal's title (often what it works on): the program says it better.
+    SheetAction("Close pane", "Ends ${if (agent.app == "shell") "the shell" else agent.app} in it", danger = true) { onPick("close-pane") },
+    SheetAction("Close tab", "Ends every pane in Tab ${agent.tabName}", danger = true) { onPick("close-tab") },
+) else listOf(
+    SheetAction("Show on Mac", "Bring this tab up in the Herdr window") { onPick("show") },
+    SheetAction("Split right", "A new pane beside this one") { onPick("split-right") },
+    SheetAction("Split down", "A new pane under this one") { onPick("split-down") },
+    SheetAction("Zoom", "Show only this pane in its tab, or all again") { onPick("zoom") },
+    SheetAction("Rename tab") { onPick("rename") },
+    SheetAction("Close pane", "Ends ${agent.title} in it", danger = true) { onPick("close-pane") },
+    SheetAction("Close tab", "Ends every terminal in Tab ${agent.tabName}", danger = true) { onPick("close-tab") },
+)
 
 /** Starts a new tab running the program you pick. */
 @Composable

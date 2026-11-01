@@ -24,6 +24,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     // A herdr-remote://pair link this activity was opened with, until used.
@@ -133,6 +134,7 @@ private fun App(link: String?, onLinkUsed: () -> Unit, openFromNotification: Str
                 api = a, host = host, machines = herd?.machines.orEmpty(),
                 onBack = { newTask = false },
                 onStarted = { t -> newTask = false; section = Section.Herd; openTerminal = t },
+                app = herd?.app ?: true, cli = herd?.cli ?: false, workspaces = herd?.workspaces.orEmpty(),
             )
             return@Box
         }
@@ -160,14 +162,21 @@ private fun App(link: String?, onLinkUsed: () -> Unit, openFromNotification: Str
         }
         if (notifyMenu) NotificationsSheet(onTurnOff = { setNotify(false) }, onDismiss = { notifyMenu = false })
         val tell = { p: String -> Toast.makeText(context, p, Toast.LENGTH_LONG).show() }
+        // Without the Herdr app (only the herdr CLI runs), what needs its window goes.
+        val withApp = herd?.app ?: true
+        val withCli = herd?.cli ?: false
         if (newMenu) ActionSheet(
             title = "New",
             onDismiss = { newMenu = false },
-            actions = listOf(
+            actions = listOfNotNull(
                 SheetAction("New task", "An agent in a folder you pick, on what you ask; opens here") { newMenu = false; newTask = true },
-                SheetAction("Resume a session", "Pick up an earlier tego or Claude Code conversation in a new tab") { newMenu = false; resumeList = true },
-                SheetAction("New tab", "A shell or a program, in the folder of the terminal focused on the Mac") { newMenu = false; newTab = true },
-                SheetAction("Machines", "Add a machine Herdr runs terminals on over ssh, or manage them") { newMenu = false; machinesSheet = true },
+                if (withApp) SheetAction("Resume a session", "Pick up an earlier tego or Claude Code conversation in a new tab") { newMenu = false; resumeList = true } else null,
+                if (withApp) SheetAction("New tab", "A shell or a program, in the folder of the terminal focused on the Mac") { newMenu = false; newTab = true } else null,
+                if (withCli) SheetAction(if (withApp) "New tab in herdr" else "New tab", "A shell, in herdr's focused workspace") {
+                    newMenu = false
+                    scope.launch { runCatching { a.herdrNewTab(herd?.workspaces?.firstOrNull { it.focused }?.id.orEmpty()) }.onSuccess { herdTick++ }.onFailure { tell(it.advice()) } }
+                } else null,
+                if (withApp) SheetAction("Machines", "Add a machine Herdr runs terminals on over ssh, or manage them") { newMenu = false; machinesSheet = true } else null,
             ),
         )
         if (newTab) NewTabSheet(a, scope, onDismiss = { newTab = false }, onProblem = tell)

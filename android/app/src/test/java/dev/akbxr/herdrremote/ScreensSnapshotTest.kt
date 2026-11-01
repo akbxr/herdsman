@@ -736,6 +736,75 @@ class ScreensSnapshotTest {
         }
     }
 
+    // The herdr CLI (herdr:<pane>) beside the Herdr app, or alone.
+    private val cliAgents = listOf(
+        Agent("herdr:wF:p2", "claude", "Fix the login form", State.Working, "wF:t2", "2", true, "api", pane = "wF:p2", spaceId = "wF", source = "herdr"),
+        Agent("herdr:wF:p3", "shell", null, State.Idle, "wF:t2", "2", true, "api", pane = "wF:p3", spaceId = "wF", source = "herdr"),
+        Agent("herdr:wA:p1", "codex", null, State.NeedsYou, "wA:t1", "build", false, "home", pane = "wA:p1", spaceId = "wA", source = "herdr"),
+    )
+    private val workspaces = listOf(Workspace("wF", "api", true), Workspace("wA", "home"), Workspace("wB", "blog"))
+    private val herdBoth = herd.copy(agents = herd.agents.take(3) + cliAgents, cli = true, workspaces = workspaces)
+
+    @Test fun herdBothBackends() = paparazzi.snapshot {
+        Frame {
+            Column(Modifier.fillMaxSize()) {
+                Box(Modifier.weight(1f)) {
+                    HerdScreen("AKBARs-MacBook-Air.local", herdBoth, problem = null, onOpen = {}, onPairAgain = {}, notifyOn = true)
+                }
+                BottomBar(listOf("Herd" to true, "Screen" to false), badge = "2", onSelect = {})
+            }
+        }
+    }
+
+    @Test fun herdCliOnly() = paparazzi.snapshot {
+        Frame {
+            HerdScreen(
+                "AKBARs-MacBook-Air.local", Herd("", cliAgents, emptyList(), app = false, cli = true, workspaces = workspaces.take(2)),
+                problem = null, onOpen = {}, onPairAgain = {},
+            )
+        }
+    }
+
+    @Test fun newTaskBackends() = paparazzi.snapshot {
+        Frame {
+            NoShimmer {
+                NewTaskForm(
+                    host = "AKBARs-MacBook-Air.local",
+                    backends = true, cli = true, workspaces = workspaces, workspace = "wF",
+                    folders = folders, agents = taskAgents, loadProblem = null, onRetry = {},
+                    filter = "", onFilter = {}, picked = "$home/Code/projects/herdr-remote", onPick = {}, agent = "claude", onAgent = {},
+                    prompt = "Run the tests", onPrompt = {}, busy = false, problem = null, onBack = {}, onStart = {},
+                )
+            }
+        }
+    }
+
+    @Test fun paneActionsCli() = paparazzi.snapshot {
+        val agent = cliAgents[0]
+        HerdrTheme {
+            SheetFrame { ActionSheetContent(agent.title, paneWhere(agent), paneMenu(agent) {}) }
+        }
+    }
+
+    @Test fun agentCliTerminal() = paparazzi.snapshot {
+        Frame {
+            AgentContent(
+                terminal = "herdr:wF:p2", agent = cliAgents[0], status = TermStatus(state = "live", cols = 120, rows = 34, phoneCols = 52, phoneRows = 40),
+                ctrl = false, problem = null, message = "", onMessage = {}, attachments = emptyList(), sending = false, refused = false,
+                onBack = {}, onMore = {}, onAttach = {}, onRemove = {}, onSend = {}, onKey = {},
+            ) { FakeTerminal() }
+        }
+    }
+
+    @Test fun screenNoWindow() = paparazzi.snapshot {
+        Frame {
+            Column(Modifier.fillMaxSize()) {
+                Box(Modifier.weight(1f)) { NoWindow() }
+                BottomBar(listOf("Herd" to false, "Screen" to true), badge = null, onSelect = {})
+            }
+        }
+    }
+
     @Test fun chatRemote() = paparazzi.snapshot {
         Frame {
             AgentContent(

@@ -79,6 +79,7 @@
   let real = { cols: term.cols, rows: term.rows };   // the core terminal's size
   let phone = { cols: 0, rows: 0 };                  // what fits this screen at the font
   let zoom = null;   // the font a pinch chose (remembered per terminal by the app); null: BASE, shrunk to fit
+  let fixed = false; // the program owns the size (a herdr CLI pane): the phone never sends its own
   const enc = new TextEncoder();
 
   function status(state, extra) { android.onStatus(JSON.stringify(Object.assign({ state }, extra || {}))); }
@@ -106,7 +107,7 @@
     if (!c.w) return;
     const px = zoom || Math.max(MIN, Math.min(BASE, Math.floor((BASE * v.w / (real.cols * c.w)) * 2) / 2));
     if (term.options.fontSize !== px) term.options.fontSize = px;
-    const driving = Math.abs(real.cols - phone.cols) <= 1 && Math.abs(real.rows - phone.rows) <= 1;
+    const driving = !fixed && Math.abs(real.cols - phone.cols) <= 1 && Math.abs(real.rows - phone.rows) <= 1;
     status("size", { cols: real.cols, rows: real.rows, phoneCols: phone.cols, phoneRows: phone.rows, driving, font: px });
   }
 
@@ -119,7 +120,7 @@
   function sendSize() {
     clearTimeout(resizeTimer);
     resizeTimer = null;
-    if (phone.cols === sent.cols && phone.rows === sent.rows) return;
+    if (fixed || (phone.cols === sent.cols && phone.rows === sent.rows)) return;
     if (ws && ws.readyState === 1) {
       ws.send(JSON.stringify({ type: "resize", cols: phone.cols, rows: phone.rows }));
       sent = { cols: phone.cols, rows: phone.rows };
@@ -160,7 +161,7 @@
     // Not on screen yet: wait for a size rather than give the terminal a made-up one.
     if (!phone.cols) { retryTimer = setTimeout(connect, 150); return; }
     status("connecting");
-    const u = url + "&cols=" + phone.cols + "&rows=" + phone.rows;
+    const u = fixed ? url : url + "&cols=" + phone.cols + "&rows=" + phone.rows;
     sent = { cols: phone.cols, rows: phone.rows };
     const sock = new WebSocket(u);   // a socket replaced or closed by hand goes quiet
     ws = sock;
@@ -409,8 +410,9 @@
 
   window.hr = {
     // zoom: the font pinched to before, for this terminal; 0 for the default.
-    connect(wsUrl, z) {
-      url = wsUrl; ended = false;
+    // fixedSize: the terminal keeps its own size (a herdr CLI pane).
+    connect(wsUrl, z, fixedSize) {
+      url = wsUrl; ended = false; fixed = !!fixedSize;
       dropSocket();
       zoom = z > 0 ? Math.max(ZMIN, Math.min(ZMAX, z)) : null;
       // Load the terminal's fonts first (document.fonts.ready doesn't wait for

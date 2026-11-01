@@ -739,11 +739,13 @@ fun AgentContent(
             }
             Column(Modifier.weight(1f)) {
                 Text(name, style = Type.title, color = Ink.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                // Another machine's terminal says where: "Working · vps · Tab 2 · t3".
+                // Another machine's terminal says where: "Working · vps · Tab 2 · t3";
+                // a herdr CLI pane its workspace: "Working · api / Tab 2 · herdr:wF:p2".
                 val machine = agent?.machine ?: machineOf(terminal)
                 Text(
                     listOfNotNull(
-                        agent?.state?.word, machine.ifEmpty { null }, agent?.let { "Tab ${it.tabName}" },
+                        agent?.state?.word, machine.ifEmpty { null },
+                        agent?.let { if (it.cli) "${it.spaceName} / Tab ${it.tabName}" else "Tab ${it.tabName}" },
                         if (machine.isEmpty()) terminal else terminal.substringAfterLast('/'),
                     ).joinToString("  ·  "),
                     style = Type.small, color = agent?.state?.takeIf { it != State.Idle }?.tagColor() ?: Ink.dust, maxLines = 1,
@@ -813,6 +815,8 @@ fun AgentContent(
         // Whose size the terminal has: typing in it takes it over.
         val sizeLine = when {
             status.cols == 0 -> " "
+            // herdr owns its panes' size: the phone shows it as it is.
+            isHerdrPane(terminal) -> "herdr's pane size, ${status.cols}×${status.rows} · pinch to zoom"
             status.driving -> "Sized for this phone · ${status.cols}×${status.rows}"
             else -> "The Mac's size, ${status.cols}×${status.rows} · type in it to fit it to this phone"
         }

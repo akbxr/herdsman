@@ -47,6 +47,12 @@ import org.json.JSONObject
 
 @Composable
 fun ScreenScreen(api: Api, herd: Herd?) {
+    // Only the herdr CLI runs: no window to picture.
+    if (herd != null && !herd.app) NoWindow() else WindowPicture(api, herd)
+}
+
+@Composable
+private fun WindowPicture(api: Api, herd: Herd?) {
     var picture by remember { mutableStateOf<Bitmap?>(null) }
     var takenAt by remember { mutableLongStateOf(0L) }
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
@@ -103,7 +109,7 @@ fun ScreenScreen(api: Api, herd: Herd?) {
                         Text(spaceLabel, style = Type.small, color = if (tab.spaceActive) Ink.text else Ink.dust, maxLines = 1)
                     }
                     val shown = tab.active && tab.spaceActive
-                    val agents = herd?.agents.orEmpty().filter { it.tabId == tab.id }
+                    val agents = herd?.agents.orEmpty().filter { !it.cli && it.tabId == tab.id }
                     val label = agents.firstOrNull()?.title?.let { "${tab.name}  $it" } ?: tab.name
                     Box(
                         Modifier
@@ -156,5 +162,16 @@ fun ScreenScreen(api: Api, herd: Herd?) {
                 )
             }
         }
+    }
+}
+
+/** The Screen tab without the Herdr app: a calm note, not an error. */
+@Composable
+fun NoWindow() {
+    Column(Modifier.fillMaxSize().padding(start = 24.dp, end = 24.dp, top = 20.dp)) {
+        Text("The Mac's window", style = Type.title, color = Ink.text)
+        Text("The Herdr app isn't running", style = Type.small, color = Ink.dust)
+        Spacer(Modifier.height(16.dp))
+        Hint("The Screen tab shows the Herdr app's window; herdr CLI has none. Its panes are on the Herd tab.")
     }
 }
