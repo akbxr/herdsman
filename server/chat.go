@@ -16,8 +16,8 @@ package main
 // other's chat. A session that has said nothing yet has no file: the chat is
 // empty.
 //
-// Transcripts grow to tens of MB: only the tail is read, and a parse is kept
-// until the file changes.
+// Transcripts grow to tens of MB: only the tail is read (more when a rewind
+// went back further than that), and a parse is kept until the file changes.
 
 import (
 	"bytes"
@@ -58,7 +58,8 @@ type chatResult struct {
 }
 
 const (
-	chatTail     = 3 << 20 // bytes read from the end of a transcript
+	chatTail     = 3 << 20  // bytes read from the end of a transcript
+	chatTailMax  = 32 << 20 // the most read, to reach back to where a rewind branched off
 	chatMaxItems = 120
 )
 
@@ -66,6 +67,7 @@ type chatCacheEntry struct {
 	size  int64
 	mtime time.Time
 	items []ChatItem
+	tail  int64 // the bytes read that reached far enough: the next read starts there
 }
 
 var chatCache = struct {
@@ -272,16 +274,29 @@ func readChat(agent, path string, st os.FileInfo) ([]ChatItem, error) {
 	if ok && c.size == st.Size() && c.mtime.Equal(st.ModTime()) {
 		return c.items, nil
 	}
-	lines, err := tailLines(path, chatTail)
-	if err != nil {
-		return nil, err
+	// A rewound conversation continues from a point that may be older than
+	// the tail: read further back until the branch in play is whole.
+	n := int64(chatTail)
+	if ok && c.tail > n {
+		n = c.tail
 	}
 	var items []ChatItem
-	switch agent {
-	case "codex":
-		items = parseCodex(lines)
-	default:
-		items = parseTree(agent, lines)
+	for {
+		lines, err := tailLines(path, n)
+		if err != nil {
+			return nil, err
+		}
+		cut := false
+		switch agent {
+		case "codex":
+			items = parseCodex(lines)
+		default:
+			items, cut = parseTree(agent, lines)
+		}
+		if !cut || n >= st.Size() || n >= chatTailMax {
+			break
+		}
+		n = min(n*2, chatTailMax)
 	}
 	if items == nil {
 		items = []ChatItem{} // a new session: an empty list, not null
@@ -290,7 +305,7 @@ func readChat(agent, path string, st os.FileInfo) ([]ChatItem, error) {
 		items = items[len(items)-chatMaxItems:]
 	}
 	chatCache.Lock()
-	chatCache.m[path] = chatCacheEntry{st.Size(), st.ModTime(), items}
+	chatCache.m[path] = chatCacheEntry{st.Size(), st.ModTime(), items, n}
 	chatCache.Unlock()
 	return items, nil
 }
@@ -353,13 +368,23 @@ type treeEntry struct {
 	id, parent string
 	msg        *message
 	note       string // compaction and the like
+	at         int    // its place among the entries read
 }
+
+// A walk that stops this many entries after the start of what was read left
+// a dead branch behind it: the branch in play goes on further back.
+const chatDeadBranch = 16
 
 // parseTree reads tego's and Claude Code's transcripts: entries linked to
 // their parent, so a rewound or branched conversation shows only the branch
-// in play (the one the last entry is on).
-func parseTree(agent string, lines [][]byte) []ChatItem {
-	entries := map[string]treeEntry{}
+// in play: the one the last entry is on, or, in tego, the one a rewind
+// (a "leaf" entry) moved to.
+//
+// cut: the branch in play goes back past the lines given, behind entries of
+// another branch (a rewind to a point older than the tail): read more.
+func parseTree(agent string, lines [][]byte) (items []ChatItem, cut bool) {
+	entries := map[string]*treeEntry{}
+	var order []*treeEntry
 	last := ""
 	for _, l := range lines {
 		var e struct {
@@ -375,7 +400,7 @@ func parseTree(agent string, lines [][]byte) []ChatItem {
 		if json.Unmarshal(l, &e) != nil {
 			continue
 		}
-		te := treeEntry{}
+		te := &treeEntry{}
 		if agent == "claude" {
 			if e.UUID == "" || e.IsSidechain {
 				continue
@@ -388,6 +413,21 @@ func parseTree(agent string, lines [][]byte) []ChatItem {
 				te.msg = e.Message
 			}
 		} else {
+			// tego: only messages and compactions are nodes of the tree. A
+			// rewind (/tree, editing an earlier message) writes
+			// {"type":"leaf","id":<node>}: the id is the node the conversation
+			// now continues from, not a node of its own; "" starts over.
+			switch e.Type {
+			case "message":
+				te.msg = e.Message
+			case "compaction":
+				te.note = "Earlier messages were summarised to free context."
+			case "leaf":
+				last = e.ID
+				continue
+			default:
+				continue
+			}
 			if e.ID == "" {
 				continue
 			}
@@ -395,36 +435,54 @@ func parseTree(agent string, lines [][]byte) []ChatItem {
 			if e.Parent != nil {
 				te.parent = *e.Parent
 			}
-			switch e.Type {
-			case "message":
-				te.msg = e.Message
-			case "compaction":
-				te.note = "Earlier messages were summarised to free context."
-			}
 		}
-		entries[te.id] = te
+		if old, ok := entries[te.id]; ok { // written again: same place
+			te.at = old.at
+			*old = *te
+			te = old
+		} else {
+			te.at = len(order)
+			entries[te.id] = te
+			order = append(order, te)
+		}
 		if te.msg != nil || te.note != "" {
 			last = te.id
 		}
 	}
-	// The branch in play, oldest first.
-	var chain []treeEntry
-	seen := map[string]bool{}
-	for id := last; id != "" && !seen[id]; {
-		seen[id] = true
+
+	// The branch in play: from the last entry back to the first.
+	on := map[string]bool{}
+	oldest := len(order) // where the walk stopped: the entries read before it are on other branches
+	for id := last; id != "" && !on[id]; {
 		e, ok := entries[id]
 		if !ok {
-			break // older than the tail read
+			cut = true // older than the lines read
+			break
 		}
-		chain = append(chain, e)
+		on[id] = true
+		oldest = e.at
 		id = e.parent
 	}
-	for i, j := 0, len(chain)-1; i < j; i, j = i+1, j-1 {
-		chain[i], chain[j] = chain[j], chain[i]
+	if cut {
+		// Only a walk that stops well after the start left another branch
+		// behind; one that stops at the start is simply a long conversation.
+		dead := 0
+		for _, e := range order[:oldest] {
+			if !on[e.id] {
+				dead++
+			}
+		}
+		cut = dead > chatDeadBranch
+	}
+	if agent == "claude" {
+		parallelResults(order, entries, on)
 	}
 
 	b := &chatBuilder{byID: map[string][2]int{}}
-	for _, e := range chain {
+	for _, e := range order { // the file's order: a parent before its children
+		if !on[e.id] {
+			continue
+		}
 		if e.note != "" {
 			b.add(ChatItem{Kind: "note", Text: e.note})
 			continue
@@ -433,7 +491,62 @@ func parseTree(agent string, lines [][]byte) []ChatItem {
 			b.message(e.msg)
 		}
 	}
-	return b.items
+	return b.items, cut
+}
+
+// parallelResults: Claude Code writes the calls of one answer as a chain of
+// entries (one per tool_use) and each result as a child of its call, so the
+// conversation goes on from only one of them and the other calls and results
+// hang off the branch in play. They belong to it: an off-branch entry joins
+// when its parent is on the branch and it is the same answer (same message
+// id) or only results to calls on the branch. A rewind's branch starts with
+// a message you wrote, so it never joins.
+func parallelResults(order []*treeEntry, entries map[string]*treeEntry, on map[string]bool) {
+	calls := map[string]bool{}
+	callsOf := func(e *treeEntry) {
+		var blocks []block
+		if e.msg != nil && e.msg.Role == "assistant" && json.Unmarshal(e.msg.Content, &blocks) == nil {
+			for _, bl := range blocks {
+				if bl.Type == "tool_use" && bl.ID != "" {
+					calls[bl.ID] = true
+				}
+			}
+		}
+	}
+	for _, e := range order {
+		if on[e.id] {
+			callsOf(e)
+		}
+	}
+	for changed := true; changed; {
+		changed = false
+		for _, e := range order {
+			p, ok := entries[e.parent]
+			if on[e.id] || e.msg == nil || !ok || !on[p.id] {
+				continue
+			}
+			join := false
+			switch e.msg.Role {
+			case "assistant":
+				join = e.msg.ID != "" && p.msg != nil && p.msg.ID == e.msg.ID
+			case "user":
+				var blocks []block
+				if json.Unmarshal(e.msg.Content, &blocks) == nil && len(blocks) > 0 {
+					join = true
+					for _, bl := range blocks {
+						if bl.Type != "tool_result" || !calls[bl.ToolUseID] {
+							join = false
+						}
+					}
+				}
+			}
+			if join {
+				on[e.id] = true
+				callsOf(e)
+				changed = true
+			}
+		}
+	}
 }
 
 type chatBuilder struct {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -18,7 +19,7 @@ func lines(s string) [][]byte {
 
 func TestParseTego(t *testing.T) {
 	// A conversation rewound once: the old answer (a2) is on a dead branch.
-	items := parseTree("tego", lines(`
+	items, _ := parseTree("tego", lines(`
 		{"type":"session","id":"s"}
 		{"type":"message","id":"u1","parent":null,"message":{"role":"user","content":[{"type":"text","text":"fix the bug"}]}}
 		{"type":"message","id":"a1","parent":"u1","message":{"role":"assistant","content":[{"type":"thinking","thinking":"hmm"},{"type":"text","text":"Looking."},{"type":"tool_use","id":"c1","name":"bash","input":{"command":"go test ./..."}},{"type":"tool_use","id":"c2","name":"read","input":{"path":"main.go"}}]}}
@@ -45,7 +46,7 @@ func TestParseTego(t *testing.T) {
 }
 
 func TestParseClaude(t *testing.T) {
-	items := parseTree("claude", lines(`
+	items, _ := parseTree("claude", lines(`
 		{"type":"user","uuid":"1","parentUuid":null,"message":{"role":"user","content":"add a test"}}
 		{"type":"user","uuid":"m","parentUuid":"1","isMeta":true,"message":{"role":"user","content":"<command-name>/x</command-name>"}}
 		{"type":"assistant","uuid":"2","parentUuid":"m","message":{"id":"msg1","role":"assistant","content":[{"type":"text","text":"Sure."}]}}
@@ -63,6 +64,154 @@ func TestParseClaude(t *testing.T) {
 	}
 	if !reflect.DeepEqual(items, want) {
 		t.Errorf("got  %+v\nwant %+v", items, want)
+	}
+}
+
+// tego's rewind (/tree, or editing an earlier message) writes a "leaf" entry
+// whose id is the node the conversation goes on from, then the new branch.
+// That id must not replace the node: the chat before the rewind stays.
+func TestParseTegoRewind(t *testing.T) {
+	before := `
+		{"type":"header","id":"20260101-000000-abcdef","cwd":"/p"}
+		{"type":"message","id":"u1","message":{"role":"user","content":[{"type":"text","text":"first question"}]}}
+		{"type":"message","id":"a1","parent":"u1","message":{"role":"assistant","content":[{"type":"text","text":"first answer"}]}}
+		{"type":"title","title":"t","ts":1}
+		{"type":"message","id":"u2","parent":"a1","message":{"role":"user","content":[{"type":"text","text":"rewound away"}]}}
+		{"type":"message","id":"a2","parent":"u2","message":{"role":"assistant","content":[{"type":"text","text":"dead answer"}]}}
+		{"type":"leaf","id":"a1"}`
+
+	// Right after the rewind: the conversation as it is at the rewind point.
+	items, cut := parseTree("tego", lines(before))
+	want := []ChatItem{{Kind: "user", Text: "first question"}, {Kind: "assistant", Text: "first answer"}}
+	if !reflect.DeepEqual(items, want) || cut {
+		t.Errorf("at the rewind point: got %+v (cut %v)\nwant %+v", items, cut, want)
+	}
+
+	// Then the new branch, from the rewind point.
+	items, cut = parseTree("tego", lines(before+`
+		{"type":"message","id":"u3","parent":"a1","message":{"role":"user","content":[{"type":"text","text":"second try"}]}}
+		{"type":"message","id":"a3","parent":"u3","message":{"role":"assistant","content":[{"type":"text","text":"new answer"}]}}
+	`))
+	want = append(want, ChatItem{Kind: "user", Text: "second try"}, ChatItem{Kind: "assistant", Text: "new answer"})
+	if !reflect.DeepEqual(items, want) || cut {
+		t.Errorf("after the rewind: got %+v (cut %v)\nwant %+v", items, cut, want)
+	}
+
+	// A rewind to the very start: nothing in play.
+	items, _ = parseTree("tego", lines(before+`
+		{"type":"leaf"}
+	`))
+	if len(items) != 0 {
+		t.Errorf("start over: got %+v", items)
+	}
+}
+
+// Claude Code's rewind leaves the old messages in the file and writes the new
+// prompt as a second child of the point it went back to.
+func TestParseClaudeRewind(t *testing.T) {
+	items, _ := parseTree("claude", lines(`
+		{"type":"user","uuid":"u1","parentUuid":null,"message":{"role":"user","content":"first question"}}
+		{"type":"assistant","uuid":"a1","parentUuid":"u1","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"first answer"}]}}
+		{"type":"user","uuid":"u2","parentUuid":"a1","message":{"role":"user","content":"rewound away"}}
+		{"type":"assistant","uuid":"a2","parentUuid":"u2","message":{"id":"m2","role":"assistant","content":[{"type":"text","text":"dead answer"}]}}
+		{"type":"last-prompt","leafUuid":"a2"}
+		{"type":"user","uuid":"u3","parentUuid":"a1","message":{"role":"user","content":"second try"}}
+		{"type":"assistant","uuid":"a3","parentUuid":"u3","message":{"id":"m3","role":"assistant","content":[{"type":"text","text":"new answer"}]}}
+	`))
+	want := []ChatItem{
+		{Kind: "user", Text: "first question"},
+		{Kind: "assistant", Text: "first answer"},
+		{Kind: "user", Text: "second try"},
+		{Kind: "assistant", Text: "new answer"},
+	}
+	if !reflect.DeepEqual(items, want) {
+		t.Errorf("got  %+v\nwant %+v", items, want)
+	}
+}
+
+// Parallel calls: Claude Code chains the calls of one answer and hangs each
+// result off its own call; the conversation goes on from one of them.
+func TestParseClaudeParallelCalls(t *testing.T) {
+	items, _ := parseTree("claude", lines(`
+		{"type":"user","uuid":"u1","parentUuid":null,"message":{"role":"user","content":"search"}}
+		{"type":"assistant","uuid":"c1","parentUuid":"u1","message":{"id":"m1","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"WebSearch","input":{"query":"one"}}]}}
+		{"type":"assistant","uuid":"c2","parentUuid":"c1","message":{"id":"m1","role":"assistant","content":[{"type":"tool_use","id":"t2","name":"WebSearch","input":{"query":"two"}}]}}
+		{"type":"assistant","uuid":"c3","parentUuid":"c2","message":{"id":"m1","role":"assistant","content":[{"type":"tool_use","id":"t3","name":"WebSearch","input":{"query":"three"}}]}}
+		{"type":"user","uuid":"r1","parentUuid":"c1","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"r one"}]}}
+		{"type":"user","uuid":"r3","parentUuid":"c3","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t3","content":"r three"}]}}
+		{"type":"user","uuid":"r2","parentUuid":"c2","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t2","content":"r two"}]}}
+		{"type":"attachment","uuid":"x","parentUuid":"r2"}
+		{"type":"assistant","uuid":"a","parentUuid":"x","message":{"id":"m2","role":"assistant","content":[{"type":"text","text":"Found it."}]}}
+	`))
+	want := []ChatItem{
+		{Kind: "user", Text: "search"},
+		{Kind: "tools", Tools: []ChatTool{
+			{Name: "WebSearch", Detail: "one", Result: "r one"},
+			{Name: "WebSearch", Detail: "two", Result: "r two"},
+			{Name: "WebSearch", Detail: "three", Result: "r three"},
+		}},
+		{Kind: "assistant", Text: "Found it."},
+	}
+	if !reflect.DeepEqual(items, want) {
+		t.Errorf("got  %+v\nwant %+v", items, want)
+	}
+}
+
+// A rewind to a point older than the tail: the file is read further back
+// until the branch in play is whole, and a long conversation that simply
+// starts before the tail does not make it read more.
+func TestReadChatRewindPastTheTail(t *testing.T) {
+	msg := func(id, parent, role, text string) string {
+		p := "null"
+		if parent != "" {
+			p = `"` + parent + `"`
+		}
+		return `{"type":"message","id":"` + id + `","parent":` + p + `,"message":{"role":"` + role + `","content":[{"type":"text","text":"` + text + `"}]}}` + "\n"
+	}
+	var sb strings.Builder
+	sb.WriteString(`{"type":"header","id":"s"}` + "\n")
+	sb.WriteString(msg("u1", "", "user", "first question"))
+	sb.WriteString(msg("a1", "u1", "assistant", "first answer"))
+	sb.WriteString(msg("u2", "a1", "user", "rewound away"))
+	// A long dead branch: more than the tail.
+	pad := strings.Repeat("x", 64<<10)
+	prev := "u2"
+	for i := 0; int64(i*len(pad)) < chatTail+(1<<20); i++ {
+		id := fmt.Sprintf("d%d", i)
+		sb.WriteString(msg(id, prev, "assistant", pad))
+		prev = id
+	}
+	sb.WriteString(`{"type":"leaf","id":"a1"}` + "\n")
+	sb.WriteString(msg("u3", "a1", "user", "second try"))
+	sb.WriteString(msg("a3", "u3", "assistant", "new answer"))
+
+	p := filepath.Join(t.TempDir(), "s.jsonl")
+	os.WriteFile(p, []byte(sb.String()), 0o644)
+	st, _ := os.Stat(p)
+	items, err := readChat("tego", p, st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []ChatItem{
+		{Kind: "user", Text: "first question"},
+		{Kind: "assistant", Text: "first answer"},
+		{Kind: "user", Text: "second try"},
+		{Kind: "assistant", Text: "new answer"},
+	}
+	if !reflect.DeepEqual(items, want) {
+		t.Errorf("got %d items, first %+v\nwant %+v", len(items), items[:min(len(items), 2)], want)
+	}
+
+	// The same file without the rewind: the walk stops at the start of the
+	// tail, with nothing left behind, so no more is read.
+	linear := strings.Split(strings.TrimSpace(sb.String()), "\n")
+	linear = linear[:len(linear)-3]
+	var ls [][]byte
+	for _, l := range linear[len(linear)-40:] {
+		ls = append(ls, []byte(l))
+	}
+	if items, cut := parseTree("tego", ls); cut || len(items) != 1 {
+		t.Errorf("a conversation longer than the lines read: cut %v, %d items", cut, len(items))
 	}
 }
 
