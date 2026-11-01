@@ -49,6 +49,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import kotlinx.coroutines.delay
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -72,7 +76,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-private val TermBg = Color(0xFF24283B)  // the terminal's own background (Tokyo Night Storm)
+internal val TermBg = Color(0xFF24283B)  // the terminal's own background (Tokyo Night Storm)
 
 /** The key bar: what a phone keyboard lacks, and enough to answer a menu without one. */
 private val KEYS = listOf(
@@ -103,7 +107,11 @@ fun AgentScreen(api: Api, terminal: String, agent: Agent?, appScope: CoroutineSc
     var status by remember { mutableStateOf(TermStatus()) }
     var ctrl by remember { mutableStateOf(false) }
     var problem by remember { mutableStateOf<String?>(null) }
-    var message by remember { mutableStateOf("") }
+    // The message box's text and cursor, in one place: typing fast can't race
+    // with text put in from outside (a suggestion, a quick reply).
+    var field by remember { mutableStateOf(TextFieldValue("")) }
+    val message = field.text
+    fun setMessage(text: String) { field = TextFieldValue(text, TextRange(text.length)) }
     var sending by remember { mutableStateOf(false) }
     var refused by remember { mutableStateOf(false) }
     var more by remember { mutableStateOf(false) }
@@ -113,20 +121,80 @@ fun AgentScreen(api: Api, terminal: String, agent: Agent?, appScope: CoroutineSc
     val controller = remember(terminal) { TerminalController(context) { status = it } }
     controller.onCtrlUsed = { ctrl = false }
 
-    // Attached only while on screen: in a pocket, nothing streams.
     val onScreen = rememberOnScreen()
-    LaunchedEffect(controller, onScreen) {
-        if (onScreen) controller.connect(api, terminal)
+    val link by rememberLink()
+
+    // The chat: the agent's conversation, read from its transcript (Chat.kt).
+    // It shows first for an agent; a shell (no transcript) shows its terminal.
+    var chat by remember(terminal) { mutableStateOf<ChatLog?>(null) }
+    var chatItems by remember(terminal) { mutableStateOf<List<ChatItem>>(emptyList()) }
+    var chatTried by remember(terminal) { mutableStateOf(false) }
+    var chatProblem by remember(terminal) { mutableStateOf<String?>(null) }
+    var userMode by rememberSaveable(terminal) { mutableStateOf<String?>(null) }
+    val mode = userMode ?: when {
+        chat?.source?.isNotEmpty() == true -> "chat"
+        chatTried -> "terminal"
+        else -> "loading"
+    }
+    LaunchedEffect(terminal, onScreen, mode) {
+        if (!onScreen) return@LaunchedEffect
+        while (true) {
+            runCatching { api.chat(terminal, chat?.version.orEmpty()) }
+                .onSuccess { c -> c.items?.let { chatItems = it }; chat = c; chatProblem = null }
+                .onFailure { if (mode == "chat") chatProblem = it.advice(link) }
+            chatTried = true
+            if (mode != "chat") break
+            delay(1500)
+        }
+    }
+
+    // The terminal: attached only while it shows. In a pocket, or on the
+    // chat, nothing streams.
+    LaunchedEffect(controller, onScreen, mode) {
+        if (onScreen && mode == "terminal") controller.connect(api, terminal)
         else controller.web.evaluateJavascript("window.hr && hr.close()", null)
     }
     DisposableEffect(controller) { onDispose { controller.close() } }
     // Wi-Fi or Tailscale back: reconnect now, not at the next try.
-    val link by rememberLink()
     LaunchedEffect(controller, link) { if (link == Link.Up) controller.retryNow() }
     // The keyboard covering the screen (for the terminal's own keys or the
     // message box): the terminal keeps its rows and scrolls instead.
     val keyboardUp = WindowInsets.isImeVisible
     LaunchedEffect(controller, keyboardUp) { controller.keyboard(keyboardUp) }
+
+    // "/" and "@" in the message box (Composer.kt).
+    var commands by remember(terminal) { mutableStateOf<List<Command>?>(null) }
+    var files by remember(terminal) { mutableStateOf<List<String>>(emptyList()) }
+    val want = wanted(message)
+    LaunchedEffect(terminal, want is Wanted.Commands) {
+        if (want is Wanted.Commands && commands == null) commands = runCatching { api.commands(terminal) }.getOrNull()
+    }
+    val fileQuery = (want as? Wanted.Files)?.query
+    LaunchedEffect(terminal, fileQuery) {
+        if (fileQuery == null) { files = emptyList(); return@LaunchedEffect }
+        delay(150)  // typing on: ask once
+        files = runCatching { api.files(terminal, fileQuery) }.getOrDefault(emptyList())
+    }
+    val commandHits = (want as? Wanted.Commands)?.let { matchCommands(commands.orEmpty(), it.query) }.orEmpty()
+    val suggestions = when (want) {
+        is Wanted.Commands -> commandHits.map { it.name to it.help }
+        is Wanted.Files -> files.map { it.substringAfterLast('/') to it }
+        null -> emptyList()
+    }
+
+    // Quick replies.
+    val snippetStore = remember { Snippets(context) }
+    var snippets by remember { mutableStateOf(snippetStore.load()) }
+    var editing by remember { mutableStateOf<Int?>(null) }  // -1: a new one
+    editing?.let { i ->
+        fun store(list: List<String>) { snippets = list; snippetStore.save(list); editing = null }
+        SnippetDialog(
+            initial = snippets.getOrNull(i).orEmpty(),
+            onSave = { text -> store(if (i < 0) snippets + text else snippets.toMutableList().also { it[i] = text }) },
+            onDelete = if (i < 0) null else ({ store(snippets.filterIndexed { j, _ -> j != i }) }),
+            onDismiss = { editing = null },
+        )
+    }
 
     // Picked files go up right away, so Send only has paths to pass on.
     fun add(uris: List<Uri>) {
@@ -154,7 +222,7 @@ fun AgentScreen(api: Api, terminal: String, agent: Agent?, appScope: CoroutineSc
         problem = null
         scope.launch {
             runCatching { api.send(terminal, text, force) }
-                .onSuccess { message = ""; attachments.clear(); refused = false }
+                .onSuccess { setMessage(""); attachments.clear(); refused = false }
                 .onFailure {
                     // hc send won't type into a program that is asking something.
                     if (!force && agent?.state == State.NeedsYou) {
@@ -184,10 +252,43 @@ fun AgentScreen(api: Api, terminal: String, agent: Agent?, appScope: CoroutineSc
     }
 
     AgentContent(
+        mode = mode,
+        chatAvailable = chat?.source?.isNotEmpty() == true,
+        onMode = { userMode = it },
+        suggestions = suggestions,
+        onPickSuggestion = { i ->
+            when (want) {
+                is Wanted.Commands -> commandHits.getOrNull(i)?.let { setMessage(it.name + " ") }
+                is Wanted.Files -> files.getOrNull(i)?.let { setMessage(withFile(message, it)) }
+                null -> {}
+            }
+        },
+        snippets = snippets,
+        onSnippet = { text -> setMessage(if (message.isBlank()) text else message.trimEnd() + " " + text); refused = false },
+        onEditSnippet = { editing = it },
+        onAddSnippet = { editing = -1 },
+        onEsc = { scope.launch { runCatching { api.keys(terminal, "esc") }.onFailure { problem = it.advice() } } },
+        chatSlot = {
+            ChatView(
+                items = chatItems,
+                status = chat?.status,
+                agentName = agent?.title ?: chat?.agent?.ifBlank { null } ?: terminal,
+                onAnswer = { answer ->
+                    val st = chat?.status
+                    scope.launch {
+                        runCatching { api.answer(terminal, st?.seq ?: 0, answer) }
+                            .onSuccess { chat = chat?.copy(status = null) }
+                            .onFailure { problem = it.advice() }
+                    }
+                },
+                onOpenTerminal = { userMode = "terminal" },
+            )
+        },
         link = link,
         onOpenTailscale = { Net.openTailscale(context); Unit }.takeIf { Net.hasTailscale(context) },
-        terminal = terminal, agent = agent, status = status, ctrl = ctrl, problem = problem,
-        message = message, onMessage = { message = it; refused = false },
+        terminal = terminal, agent = agent, status = status, ctrl = ctrl, problem = problem ?: chatProblem,
+        message = message, onMessage = { setMessage(it); refused = false },
+        field = field, onField = { if (it.text != field.text) refused = false; field = it },
         attachments = attachments, sending = sending, refused = refused,
         onBack = onBack,
         onMore = { more = true },
@@ -262,6 +363,19 @@ private fun humanSize(bytes: Long): String = when {
 /** The agent screen around its terminal (the slot), without the network. */
 @Composable
 fun AgentContent(
+    mode: String = "terminal",          // chat, terminal, loading (not known yet)
+    chatAvailable: Boolean = false,
+    onMode: (String) -> Unit = {},
+    suggestions: List<Pair<String, String>> = emptyList(),
+    onPickSuggestion: (Int) -> Unit = {},
+    snippets: List<String> = emptyList(),
+    onSnippet: (String) -> Unit = {},
+    onEditSnippet: (Int) -> Unit = {},
+    onAddSnippet: () -> Unit = {},
+    onEsc: () -> Unit = {},
+    chatSlot: @Composable () -> Unit = {},
+    field: TextFieldValue? = null,                  // the box's text and cursor; null: message, cursor at its end
+    onField: ((TextFieldValue) -> Unit)? = null,
     link: Link = Link.Up,
     onOpenTailscale: (() -> Unit)? = null,
     terminal: String,
@@ -301,11 +415,17 @@ fun AgentContent(
                     style = Type.small, color = agent?.state?.takeIf { it != State.Idle }?.tagColor() ?: Ink.dust, maxLines = 1,
                 )
             }
+            if (chatAvailable) ModeToggle(mode, onMode)
             if (agent != null) {
                 IconKey(onClick = onMore) { Icon(Icons.Filled.MoreVert, contentDescription = "Split, zoom, rename, close", tint = Ink.text) }
             }
         }
 
+        if (mode == "chat") {
+            Box(Modifier.weight(1f).fillMaxWidth()) { chatSlot() }
+        } else if (mode == "loading") {
+            Box(Modifier.weight(1f).fillMaxWidth())
+        } else
         // The terminal itself.
         Box(
             Modifier
@@ -356,7 +476,7 @@ fun AgentContent(
             status.driving -> "Sized for this phone · ${status.cols}×${status.rows}"
             else -> "The Mac's size, ${status.cols}×${status.rows} · type in it to fit it to this phone"
         }
-        Text(sizeLine, style = Type.small, color = Ink.dust, maxLines = 1, overflow = TextOverflow.Ellipsis,
+        if (mode == "terminal") Text(sizeLine, style = Type.small, color = Ink.dust, maxLines = 1, overflow = TextOverflow.Ellipsis,
             modifier = Modifier.padding(start = 14.dp, end = 14.dp, top = 6.dp))
 
         problem?.let { Notice(it, Modifier.padding(horizontal = 8.dp, vertical = 6.dp)) }
@@ -369,6 +489,11 @@ fun AgentContent(
             ) { attachments.forEach { AttachmentChip(it, onRemove = { onRemove(it.id) }) } }
         }
 
+        // "/" commands and "@" files for the word being typed.
+        if (suggestions.isNotEmpty()) {
+            Suggestions(suggestions, onPickSuggestion, Modifier.padding(start = 8.dp, end = 8.dp, top = 8.dp))
+        }
+
         // The message box: prose, with suggestions, sent as one message.
         Row(
             Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, top = 8.dp),
@@ -377,8 +502,8 @@ fun AgentContent(
             IconKey(onClick = onAttach, boxed = true) { Icon(Icons.Filled.Add, contentDescription = "Attach photos, videos or files", tint = Ink.text) }
             Spacer(Modifier.width(6.dp))
             BasicTextField(
-                value = message,
-                onValueChange = onMessage,
+                value = field ?: TextFieldValue(message, TextRange(message.length)),
+                onValueChange = { v -> onField?.invoke(v) ?: onMessage(v.text) },
                 textStyle = Type.body.copy(color = Ink.text),
                 cursorBrush = SolidColor(Ink.yellow),
                 maxLines = 4,
@@ -410,8 +535,9 @@ fun AgentContent(
             }
         }
 
-        // Key bar.
-        Row(
+        // The chat's quick replies, or the terminal's key bar.
+        if (mode == "chat") SnippetRow(snippets, onSnippet, onEditSnippet, onAddSnippet, onEsc)
+        else Row(
             Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp, vertical = 8.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
@@ -430,6 +556,29 @@ fun AgentContent(
                     Text(label, style = Type.label.copy(fontFamily = JetBrains), color = if (on) Ink.night else Ink.text)
                 }
             }
+        }
+    }
+}
+
+/** Chat or Terminal, at the top. */
+@Composable
+private fun ModeToggle(mode: String, onMode: (String) -> Unit) {
+    Row(
+        Modifier
+            .padding(end = 2.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .border(1.dp, Ink.rule, RoundedCornerShape(10.dp))
+            .padding(2.dp),
+    ) {
+        listOf("chat" to "Chat", "terminal" to "Terminal").forEach { (key, label) ->
+            val on = mode == key
+            Box(
+                Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(if (on) Ink.pen else Color.Transparent)
+                    .clickable(role = Role.Tab) { onMode(key) }
+                    .padding(horizontal = 10.dp, vertical = 7.dp),
+            ) { Text(label, style = Type.label, color = if (on) Ink.text else Ink.dust) }
         }
     }
 }

@@ -150,6 +150,9 @@ func main() {
 	mux.HandleFunc("POST /api/upload", s.auth(s.upload))       // an attachment, placed beside a terminal
 	mux.HandleFunc("GET /api/events", s.auth(s.eventsHandler)) // long poll: agents' status changes
 	mux.HandleFunc("POST /api/answer", s.auth(s.answer))       // allow, deny or reply to a waiting agent
+	mux.HandleFunc("GET /api/chat", s.auth(s.chat))            // the agent's conversation, from its transcript
+	mux.HandleFunc("GET /api/commands", s.auth(s.commands))    // "/" in the message box
+	mux.HandleFunc("GET /api/files", s.auth(s.files))          // "@" in the message box
 
 	s.events = newEventHub(s.hc)
 	go s.events.run(context.Background())
@@ -293,7 +296,7 @@ func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 func logRequests(h http.Handler) http.Handler {
 	// The phone polls these all the time; log them only when they fail.
-	quiet := map[string]bool{"/api/state": true, "/api/events": true, "/api/read": true, "/api/shot": true}
+	quiet := map[string]bool{"/api/state": true, "/api/events": true, "/api/read": true, "/api/shot": true, "/api/chat": true, "/api/commands": true, "/api/files": true}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		sw := &statusWriter{ResponseWriter: w, code: http.StatusOK}

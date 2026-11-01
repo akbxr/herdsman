@@ -101,7 +101,20 @@ The phone needs Tailscale on too, signed in to the same account.
 - **Herd**: every terminal as an ear tag stamped with its address, colored
   by state: yellow needs you, blue working, green done, grey idle. Sorted
   with what needs you first. The tab bar counts the yellow ones.
-- **Agent** (tap a tag): the terminal itself, live (`hc attach` over a
+- **Chat** (tap an agent's tag): its conversation, read from the agent's own
+  transcript: what you asked, its answers in Markdown, and the tools it ran
+  folded into one line each run (tap to see commands, results, failures).
+  Below it, what it does now; when it asks for approval, **Allow** and
+  **Deny** answer from there. Works for tego, Claude Code and Codex (a shell
+  has no chat and opens on its terminal). **Chat | Terminal** at the top
+  switches.
+
+  The message box suggests as you type: `/` lists the agent's commands, your
+  custom commands (`~/.claude/commands`, `.tego/commands`…) and skills; `@`
+  finds files in the folder the agent works in. Under it, **Esc** stops the
+  agent, and quick replies (continue, yes, /compact…) put their text in the
+  box; hold one to change or remove it, **+** adds one.
+- **Terminal**: the terminal itself, live (`hc attach` over a
   WebSocket, drawn by xterm.js with the Mac's Tokyo Night colors and Nerd
   Font icons). Tap it to type: the phone's keyboard goes straight to the
   program, without suggestions or autocorrect. The key bar adds Esc, Tab,
@@ -153,6 +166,10 @@ All under `/api`, with `Authorization: Bearer <token>` (except `/pair`):
 | GET | `/attach?terminal=t12&cols=&rows=&token=` | WebSocket: `hc attach` in a PTY; binary frames are terminal bytes both ways, text frames `{"type":"size"}` (server) and `{"type":"resize"}`, `{"type":"reply"}` (phone) |
 | POST | `/upload?terminal=t12&name=x.png` | body = the file; `hc put` places it beside the terminal → `{path, bytes}` |
 | GET | `/events?after=41&wait=25` | long poll for agents' status changes → `{seq, events}`; without `after`: `{seq, current}` |
+| POST | `/answer` | `{terminal, seq, answer: allow\|deny\|reply, text?}`: answers a waiting agent; 409 when the prompt is gone |
+| GET | `/chat?terminal=t12&version=` | the agent's conversation from its transcript → `{agent, source, version, items, status}`; `same: true` when unchanged |
+| GET | `/commands?terminal=t12` | the agent's slash commands, custom commands and skills |
+| GET | `/files?terminal=t12&q=att` | files in the agent's folder, best matches first |
 
 The terminal page (`android/app/src/main/assets/term/terminal.html`) also
 opens in a desktop browser for debugging: `terminal.html#ws=<attach URL>`.

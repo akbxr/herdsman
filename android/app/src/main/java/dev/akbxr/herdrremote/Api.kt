@@ -152,6 +152,29 @@ class Api(val base: String, val token: String) {
         call("/api/send", JSONObject().put("terminal", terminal).put("text", text).put("force", force), timeoutMs = 45_000)
     }
 
+    /**
+     * The agent's conversation (Chat.kt). With the version of the last one,
+     * an unchanged conversation comes back without its items (same = true).
+     */
+    suspend fun chat(terminal: String, version: String = ""): ChatLog {
+        val q = "terminal=" + enc(terminal) + if (version.isNotEmpty()) "&version=" + enc(version) else ""
+        return ChatLog.from(call("/api/chat?$q", timeoutMs = 15_000))
+    }
+
+    /** "/" in the message box: the agent's commands, custom commands and skills. */
+    suspend fun commands(terminal: String): List<Command> {
+        val a = call("/api/commands?terminal=" + enc(terminal)).optJSONArray("commands") ?: return emptyList()
+        return (0 until a.length()).map { a.getJSONObject(it).let { o -> Command(o.optString("name"), o.optString("help")) } }
+    }
+
+    /** "@" in the message box: files of the folder the agent works in, best matches first. */
+    suspend fun files(terminal: String, query: String): List<String> {
+        val a = call("/api/files?terminal=" + enc(terminal) + "&q=" + enc(query), timeoutMs = 12_000).optJSONArray("files") ?: return emptyList()
+        return (0 until a.length()).map { a.getString(it) }
+    }
+
+    private fun enc(s: String) = java.net.URLEncoder.encode(s, "UTF-8")
+
     suspend fun keys(terminal: String, vararg keys: String) {
         call("/api/keys", JSONObject().put("terminal", terminal).put("keys", JSONArray(keys.toList())))
     }

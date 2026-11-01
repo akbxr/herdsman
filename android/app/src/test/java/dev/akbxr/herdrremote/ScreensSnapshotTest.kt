@@ -111,6 +111,51 @@ class ScreensSnapshotTest {
         Frame { AgentView(TermStatus(state = "reconnecting", cols = 52, rows = 40, attempt = 4), ctrl = false) }
     }
 
+    private val chatItems = listOf(
+        ChatItem("user", "the login form loses the email after a failed attempt, fix it"),
+        ChatItem("assistant", "Looking at how the form keeps its state."),
+        ChatItem("tools", tools = listOf(
+            ChatTool("grep", "resetForm", "src/login.tsx:41", false),
+            ChatTool("read", "src/login.tsx", "", false),
+            ChatTool("bash", "npm test -- login", "1 failing: keeps the email", true),
+        )),
+        ChatItem("assistant", "Found it. `resetForm()` runs on **every** error, not only on success:\n\n```ts\nif (error) resetForm()\n```\n\n- keep the email on errors\n- clear only the password"),
+        ChatItem("tools", tools = listOf(ChatTool("edit", "src/login.tsx", "", false))),
+        ChatItem("note", "Earlier messages were summarised to free context."),
+    )
+
+    private fun event(state: String, kind: String = "", msg: String = "") =
+        AgentEvent(seq = 7, terminal = "t12", state = state, kind = kind, msg = msg, app = "tego", where = "~ / 1")
+
+    @Composable
+    private fun ChatScreen(status: AgentEvent?, message: String = "", suggestions: List<Pair<String, String>> = emptyList()) {
+        AgentContent(
+            mode = "chat", chatAvailable = true, suggestions = suggestions,
+            snippets = Snippets.DEFAULT,
+            chatSlot = { ChatView(chatItems, status, "tego", onAnswer = {}, onOpenTerminal = {}) },
+            terminal = "t12", agent = herd.agents[0], status = TermStatus(), ctrl = false, problem = null,
+            message = message, onMessage = {}, attachments = emptyList(), sending = false, refused = false,
+            onBack = {}, onMore = {}, onAttach = {}, onRemove = {}, onSend = {}, onKey = {},
+        ) {}
+    }
+
+    @Test fun chatWorking() = paparazzi.snapshot { Frame { ChatScreen(event("working", msg = "Running the tests")) } }
+
+    @Test fun chatNeedsYou() = paparazzi.snapshot { Frame { ChatScreen(event("blocked", "permission", "Allow bash: npm test -- login?")) } }
+
+    @Test fun chatCommands() = paparazzi.snapshot {
+        Frame {
+            ChatScreen(
+                null, message = "/co",
+                suggestions = listOf(
+                    "/compact" to "Summarise history to free context: /compact [focus]",
+                    "/skill:commit-message" to "Conventional Commits from the staged changes",
+                    "/clone" to "Duplicate the current session into a new one",
+                ),
+            )
+        }
+    }
+
     @Test fun agentAttachments() = paparazzi.snapshot {
         val uri = android.net.Uri.parse("content://x/1")
         Frame {
