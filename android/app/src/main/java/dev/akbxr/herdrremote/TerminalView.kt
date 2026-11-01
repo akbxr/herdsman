@@ -101,7 +101,8 @@ class TerminalController(context: Context, private val onStatus: (TermStatus) ->
     private var terminal = ""
     private val zooms = context.getSharedPreferences("zoom", Context.MODE_PRIVATE)
 
-    private fun js(code: String) = main.post { web.evaluateJavascript(code, null) }
+    // Before the page has loaded there is no hr: nothing to tell it yet.
+    private fun js(code: String) = main.post { web.evaluateJavascript("window.hr && $code", null) }
 
     fun connect(api: Api, terminal: String) {
         val ws = api.base.trimEnd('/').replaceFirst("http", "ws") +

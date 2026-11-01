@@ -49,6 +49,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -116,7 +117,7 @@ fun AgentScreen(api: Api, terminal: String, agent: Agent?, appScope: CoroutineSc
     val onScreen = rememberOnScreen()
     LaunchedEffect(controller, onScreen) {
         if (onScreen) controller.connect(api, terminal)
-        else controller.web.evaluateJavascript("hr.close()", null)
+        else controller.web.evaluateJavascript("window.hr && hr.close()", null)
     }
     DisposableEffect(controller) { onDispose { controller.close() } }
     // Wi-Fi or Tailscale back: reconnect now, not at the next try.
@@ -206,17 +207,20 @@ fun AgentScreen(api: Api, terminal: String, agent: Agent?, appScope: CoroutineSc
             }
         },
     ) {
-        AndroidView(
-            factory = {
-                FrameLayout(it).apply {
-                    (controller.web.parent as? ViewGroup)?.removeView(controller.web)
-                    (controller.input.parent as? ViewGroup)?.removeView(controller.input)
-                    addView(controller.web, FrameLayout.LayoutParams(-1, -1))
-                    addView(controller.input, FrameLayout.LayoutParams(1, 1))
-                }
-            },
-            modifier = Modifier.fillMaxSize(),
-        )
+        // Keyed: another terminal (opened from a notification) brings its own WebView.
+        key(controller) {
+            AndroidView(
+                factory = {
+                    FrameLayout(it).apply {
+                        (controller.web.parent as? ViewGroup)?.removeView(controller.web)
+                        (controller.input.parent as? ViewGroup)?.removeView(controller.input)
+                        addView(controller.web, FrameLayout.LayoutParams(-1, -1))
+                        addView(controller.input, FrameLayout.LayoutParams(1, 1))
+                    }
+                },
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
     }
 }
 

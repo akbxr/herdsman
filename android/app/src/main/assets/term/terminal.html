@@ -43,7 +43,14 @@
 (() => {
   const BASE = 13, MIN = 5.5;            // font px: readable, and the smallest when fitting
   const ZMIN = 7, ZMAX = 24;             // what a pinch can choose
-  const android = Object.assign({ onStatus() {}, onTap() {}, onZoom() {}, copy() {}, haptic() {} }, window.Android || {});
+  // The app's bridge. Its methods only work called on the bridge object
+  // itself (copied onto another object, WebView refuses them).
+  const bridge = window.Android;
+  const call = (name, ...args) => { if (bridge && typeof bridge[name] === "function") bridge[name](...args); };
+  const android = {
+    onStatus: (json) => call("onStatus", json), onTap: () => call("onTap"),
+    onZoom: (px) => call("onZoom", px), copy: (text) => call("copy", text), haptic: () => call("haptic"),
+  };
   const wrap = document.getElementById("wrap");
   const term = new Terminal({
     fontFamily: "JBM, NerdSymbols, monospace", fontSize: BASE, lineHeight: 1.0, scrollback: 1000,
@@ -120,7 +127,7 @@
   }
   function measurePhone() {
     const v = view(), c = cellAt(zoom || BASE);
-    if (!c.w) return;
+    if (!c.w || wrap.clientWidth < 50 || wrap.clientHeight < 50) return;   // not laid out (or hidden): no size to give
     const next = { cols: Math.max(20, Math.floor(v.w / c.w)), rows: Math.max(5, Math.floor(v.h / c.h)) };
     // With the keyboard up the rows stay: the terminal scrolls under it
     // (herdr-core grows a terminal by adding blank rows at the bottom, so a
@@ -150,6 +157,8 @@
     clearTimeout(retryTimer);
     if (!url || ended || ws) return;
     measurePhone();
+    // Not on screen yet: wait for a size rather than give the terminal a made-up one.
+    if (!phone.cols) { retryTimer = setTimeout(connect, 150); return; }
     status("connecting");
     const u = url + "&cols=" + phone.cols + "&rows=" + phone.rows;
     sent = { cols: phone.cols, rows: phone.rows };
