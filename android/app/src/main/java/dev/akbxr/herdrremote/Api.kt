@@ -153,12 +153,25 @@ class Api(val base: String, val token: String) {
     }
 
     /**
-     * The agent's conversation (Chat.kt). With the version of the last one,
-     * an unchanged conversation comes back without its items (same = true).
+     * The agent's conversation (Chat.kt): its last [limit] items, more as you
+     * scroll back. With the version of the last one, an unchanged
+     * conversation comes back without its items (same = true).
      */
-    suspend fun chat(terminal: String, version: String = ""): ChatLog {
-        val q = "terminal=" + enc(terminal) + if (version.isNotEmpty()) "&version=" + enc(version) else ""
-        return ChatLog.from(call("/api/chat?$q", timeoutMs = 15_000))
+    suspend fun chat(terminal: String, version: String = "", limit: Int = CHAT_PAGE): ChatLog {
+        val q = "terminal=" + enc(terminal) + "&limit=$limit" + if (version.isNotEmpty()) "&version=" + enc(version) else ""
+        return ChatLog.from(call("/api/chat?$q", timeoutMs = 30_000), limit)
+    }
+
+    /** A picture of the chat, scaled down on the Mac to fit [maxSide] pixels (ChatImages.kt). */
+    suspend fun image(id: String, maxSide: Int): ByteArray = withContext(Dispatchers.IO) {
+        val c = open("/api/image?id=" + enc(id) + "&w=$maxSide", "GET", 30_000)
+        try {
+            if (c.responseCode == 401) throw ApiError("The token was not accepted.")
+            if (c.responseCode >= 400) throw ApiError("The Mac doesn't have this picture.")
+            c.inputStream.use { it.readBytes() }
+        } finally {
+            c.disconnect()
+        }
     }
 
     /** "/" in the message box: the agent's commands, custom commands and skills. */

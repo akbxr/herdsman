@@ -43,6 +43,11 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -131,6 +136,17 @@ fun AgentScreen(api: Api, terminal: String, agent: Agent?, appScope: CoroutineSc
     var chatTried by remember(terminal) { mutableStateOf(false) }
     var chatProblem by remember(terminal) { mutableStateOf<String?>(null) }
     var userMode by rememberSaveable(terminal) { mutableStateOf<String?>(null) }
+    // How far back the chat reaches: more as you scroll up, all of it for a
+    // search. Every poll asks with it, so what was loaded stays.
+    var chatLimit by remember(terminal) { mutableIntStateOf(CHAT_PAGE) }
+    val chatList = remember(terminal) { LazyListState() }
+    var searchOpen by remember(terminal) { mutableStateOf(false) }
+    var searchQuery by remember(terminal) { mutableStateOf("") }
+    // The match shown, by its item's key and number: it stays when older items come in above.
+    var searchAt by remember(terminal) { mutableStateOf<Pair<String, Int>?>(null) }
+    var searchHits by remember(terminal) { mutableStateOf<List<SearchHit>>(emptyList()) }
+    var searchedIn by remember(terminal) { mutableStateOf<Pair<List<ChatItem>, String>?>(null) }  // what searchHits are of
+    val images = remember(api) { ChatImageLoader(api) }
     // An agent runs in it (even one that has said nothing yet): it has a chat.
     val chatAvailable = chat?.agent?.isNotEmpty() == true
     val mode = userMode ?: when {
@@ -146,13 +162,16 @@ fun AgentScreen(api: Api, terminal: String, agent: Agent?, appScope: CoroutineSc
         if (lastAgent != null && lastAgent != a) userMode = null
         lastAgent = a
     }
-    LaunchedEffect(terminal, onScreen, mode) {
+    LaunchedEffect(terminal, onScreen, mode, chatLimit) {
         if (!onScreen) return@LaunchedEffect
         while (true) {
-            runCatching { api.chat(terminal, chat?.version.orEmpty()) }
+            runCatching { api.chat(terminal, chat?.version.orEmpty(), chatLimit) }
                 .onSuccess { c ->
                     // Another session (a new one, /clear, /resume): its own items, none of the last one's.
-                    if (c.source != chat?.source) chatItems = emptyList()
+                    if (chat != null && c.source != chat?.source) {
+                        chatItems = emptyList()
+                        if (chatLimit > CHAT_PAGE && !searchOpen) chatLimit = CHAT_PAGE
+                    }
                     c.items?.let { chatItems = it }
                     chat = c
                     chatProblem = null
@@ -171,13 +190,60 @@ fun AgentScreen(api: Api, terminal: String, agent: Agent?, appScope: CoroutineSc
         }
     }
 
+    // Older messages: asked for (a larger limit) until a reply with that many comes.
+    val chatHasOlder = chat?.start == false
+    val chatLoadingOlder = chat != null && chat!!.limit < chatLimit
+    // Back at the newest messages, not searching: after a while the chat
+    // goes back to its last page, so polls stay small.
+    val chatAtBottom by remember(chatList) {
+        derivedStateOf {
+            val last = chatList.layoutInfo.visibleItemsInfo.lastOrNull()
+            last == null || last.index >= chatList.layoutInfo.totalItemsCount - 2
+        }
+    }
+    LaunchedEffect(chatLimit, searchOpen, chatAtBottom) {
+        if (chatLimit > CHAT_PAGE && !searchOpen && chatAtBottom) {
+            delay(30_000)
+            chatLimit = CHAT_PAGE
+        }
+    }
+
+    // Search: the whole conversation is loaded while it is open; the matches
+    // are found off the main thread as you type.
+    LaunchedEffect(searchOpen) { if (searchOpen) chatLimit = CHAT_ALL else { searchQuery = ""; searchAt = null } }
+    LaunchedEffect(mode) { if (mode != "chat") searchOpen = false }
+    LaunchedEffect(chatItems, searchQuery) {
+        if (searchQuery.isBlank()) { searchHits = emptyList(); return@LaunchedEffect }
+        if (searchedIn?.second != searchQuery) delay(150)  // typing on: once it pauses
+        val items = chatItems
+        val query = searchQuery
+        searchHits = withContext(Dispatchers.Default) { findHits(items, query) }
+        searchedIn = items to query
+    }
+    val searchKeys = remember(chatItems) { chatKeys(chatItems) }
+    // A new query starts at the newest match.
+    val searchCurrent = searchAt?.let { (key, occ) -> searchHits.indexOfFirst { searchKeys.getOrNull(it.item) == key && it.occ == occ } }
+        ?.takeIf { it >= 0 } ?: (searchHits.size - 1)
+    fun searchMove(by: Int) {
+        if (searchHits.isEmpty()) return
+        val hit = searchHits[(searchCurrent + by).mod(searchHits.size)]
+        searchAt = searchKeys.getOrNull(hit.item)?.let { it to hit.occ }
+    }
+
     // Messages sent from the chat show at once, until the transcript has them.
-    val pending = remember(terminal) { mutableStateListOf<Pair<String, Long>>() }
+    // The Mac shows attachments as pictures, not their paths: a message is
+    // recognised by its text, or (pictures alone) by a new message of yours.
+    val pending = remember(terminal) { mutableStateListOf<Pending>() }
     LaunchedEffect(chat?.source) { pending.clear() }  // another session: not its messages
     LaunchedEffect(chatItems, pending.size) {
-        val recent = chatItems.takeLast(12).filter { it.kind == "user" }.map { it.text }
+        val mine = chatItems.takeLast(12).filter { it.kind == "user" }
+        val lastMine = chatItems.lastOrNull { it.kind == "user" }?.id
         val now = System.currentTimeMillis()
-        pending.removeAll { (text, at) -> now - at > 120_000 || recent.any { r -> r.contains(text.take(60).trim()) } }
+        pending.removeAll { p ->
+            now - p.at > 120_000 ||
+                (p.match.isNotEmpty() && mine.any { it.text.contains(p.match.take(60).trim()) }) ||
+                (p.match.isEmpty() && lastMine != p.lastMine)
+        }
     }
 
     // The menu a waiting agent shows: its real choices (Chat.kt, Answer.kt).
@@ -281,8 +347,9 @@ fun AgentScreen(api: Api, terminal: String, agent: Agent?, appScope: CoroutineSc
         scope.launch {
             runCatching { api.send(terminal, text, force) }
                 .onSuccess {
+                    val typed = message.trim()
                     setMessage(""); attachments.clear(); refused = false
-                    if (mode == "chat") pending += text to System.currentTimeMillis()
+                    if (mode == "chat") pending += Pending(text, if (paths.isEmpty()) text else typed, chatItems.lastOrNull { it.kind == "user" }?.id, System.currentTimeMillis())
                 }
                 .onFailure {
                     // hc send won't type into a program that is asking something.
@@ -330,15 +397,34 @@ fun AgentScreen(api: Api, terminal: String, agent: Agent?, appScope: CoroutineSc
         onAddSnippet = { editing = -1 },
         onEsc = { scope.launch { runCatching { api.keys(terminal, "esc") }.onFailure { problem = it.advice() } } },
         changesSlot = { ChangesView(changes, changedFiles) },
-        chatSlot = {
+        onSearch = { searchOpen = !searchOpen },
+        chatSlot = { CompositionLocalProvider(LocalChatImages provides images) { Column(Modifier.fillMaxSize()) {
+            if (searchOpen) ChatSearchBar(
+                query = searchQuery,
+                onQuery = { searchQuery = it; searchAt = null },
+                count = searchHits.size,
+                current = searchCurrent,
+                loading = chatLoadingOlder || chat?.start == false,
+                onOlder = { searchMove(-1) },
+                onNewer = { searchMove(1) },
+                onClose = { searchOpen = false },
+            )
             ChatView(
                 items = chatItems,
                 status = chat?.status,
                 agentName = agent?.title ?: chat?.agent?.ifBlank { null } ?: terminal,
+                modifier = Modifier.weight(1f),
                 prompt = prompt,
-                pending = pending.map { it.first },
+                pending = pending.map { it.text },
                 loading = chat == null,
                 live = chat?.live.orEmpty(),
+                list = chatList,
+                hasOlder = chatHasOlder,
+                loadingOlder = chatLoadingOlder,
+                reachedStart = chat?.start == true && chatLimit > CHAT_PAGE,
+                onLoadOlder = { if (!chatLoadingOlder) chatLimit = nextChatLimit(chatLimit) },
+                // Matches of other items (just replaced) would point at the wrong ones.
+                search = if (searchOpen && searchQuery.isNotBlank() && searchedIn?.first === chatItems && searchedIn?.second == searchQuery) ChatSearch(searchQuery, searchHits, searchCurrent) else null,
                 onOption = { option ->
                     val st = chat?.status
                     prompt = null
@@ -358,7 +444,7 @@ fun AgentScreen(api: Api, terminal: String, agent: Agent?, appScope: CoroutineSc
                 },
                 onOpenTerminal = { userMode = "terminal" },
             )
-        },
+        } } },
         link = link,
         onOpenTailscale = { Net.openTailscale(context); Unit }.takeIf { Net.hasTailscale(context) },
         terminal = terminal, agent = agent, status = status, ctrl = ctrl, problem = problem ?: chatProblem,
@@ -399,6 +485,13 @@ fun AgentScreen(api: Api, terminal: String, agent: Agent?, appScope: CoroutineSc
         }
     }
 }
+
+/**
+ * A message sent from the chat, shown until the transcript has it: [match]
+ * is the text to find it by ("" for pictures alone), [lastMine] your last
+ * message in the chat when it went.
+ */
+data class Pending(val text: String, val match: String, val lastMine: String?, val at: Long)
 
 private fun update(list: MutableList<Attachment>, id: Long, change: (Attachment) -> Attachment) {
     val i = list.indexOfFirst { it.id == id }
@@ -448,6 +541,7 @@ fun AgentContent(
     onEditSnippet: (Int) -> Unit = {},
     onAddSnippet: () -> Unit = {},
     onEsc: () -> Unit = {},
+    onSearch: (() -> Unit)? = null,     // the chat's search, from the heading while Chat shows
     chatSlot: @Composable () -> Unit = {},
     changesSlot: @Composable () -> Unit = {},
     field: TextFieldValue? = null,                  // the box's text and cursor; null: message, cursor at its end
@@ -490,6 +584,9 @@ fun AgentContent(
                     listOfNotNull(agent?.state?.word, agent?.let { "Tab ${it.tabName}" }, terminal).joinToString("  ·  "),
                     style = Type.small, color = agent?.state?.takeIf { it != State.Idle }?.tagColor() ?: Ink.dust, maxLines = 1,
                 )
+            }
+            if (onSearch != null && mode == "chat") {
+                IconKey(onClick = onSearch) { Icon(Icons.Filled.Search, contentDescription = "Search the chat", tint = Ink.text) }
             }
             if (agent != null) {
                 IconKey(onClick = onMore) { Icon(Icons.Filled.MoreVert, contentDescription = "Split, zoom, rename, close", tint = Ink.text) }

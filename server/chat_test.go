@@ -9,6 +9,16 @@ import (
 	"testing"
 )
 
+// noIDs: the items without their ids, to compare with what a test expects.
+func noIDs(items []ChatItem) []ChatItem {
+	out := make([]ChatItem, len(items))
+	for i, it := range items {
+		it.ID = ""
+		out[i] = it
+	}
+	return out
+}
+
 func lines(s string) [][]byte {
 	var out [][]byte
 	for _, l := range strings.Split(strings.TrimSpace(s), "\n") {
@@ -40,7 +50,7 @@ func TestParseTego(t *testing.T) {
 		{Kind: "assistant", Text: "Fixed it."},
 		{Kind: "user", Text: "thanks\n\n[image]"},
 	}
-	if !reflect.DeepEqual(items, want) {
+	if items := noIDs(items); !reflect.DeepEqual(items, want) {
 		t.Errorf("got  %+v\nwant %+v", items, want)
 	}
 }
@@ -62,7 +72,7 @@ func TestParseClaude(t *testing.T) {
 		{Kind: "tools", Tools: []ChatTool{{Name: "Edit", Detail: "/a/b.go", Result: "ok"}}},
 		{Kind: "assistant", Text: "Done."},
 	}
-	if !reflect.DeepEqual(items, want) {
+	if items := noIDs(items); !reflect.DeepEqual(items, want) {
 		t.Errorf("got  %+v\nwant %+v", items, want)
 	}
 }
@@ -83,7 +93,7 @@ func TestParseTegoRewind(t *testing.T) {
 	// Right after the rewind: the conversation as it is at the rewind point.
 	items, cut := parseTree("tego", lines(before))
 	want := []ChatItem{{Kind: "user", Text: "first question"}, {Kind: "assistant", Text: "first answer"}}
-	if !reflect.DeepEqual(items, want) || cut {
+	if items := noIDs(items); !reflect.DeepEqual(items, want) || cut {
 		t.Errorf("at the rewind point: got %+v (cut %v)\nwant %+v", items, cut, want)
 	}
 
@@ -93,7 +103,7 @@ func TestParseTegoRewind(t *testing.T) {
 		{"type":"message","id":"a3","parent":"u3","message":{"role":"assistant","content":[{"type":"text","text":"new answer"}]}}
 	`))
 	want = append(want, ChatItem{Kind: "user", Text: "second try"}, ChatItem{Kind: "assistant", Text: "new answer"})
-	if !reflect.DeepEqual(items, want) || cut {
+	if items := noIDs(items); !reflect.DeepEqual(items, want) || cut {
 		t.Errorf("after the rewind: got %+v (cut %v)\nwant %+v", items, cut, want)
 	}
 
@@ -124,7 +134,7 @@ func TestParseClaudeRewind(t *testing.T) {
 		{Kind: "user", Text: "second try"},
 		{Kind: "assistant", Text: "new answer"},
 	}
-	if !reflect.DeepEqual(items, want) {
+	if items := noIDs(items); !reflect.DeepEqual(items, want) {
 		t.Errorf("got  %+v\nwant %+v", items, want)
 	}
 }
@@ -152,7 +162,7 @@ func TestParseClaudeParallelCalls(t *testing.T) {
 		}},
 		{Kind: "assistant", Text: "Found it."},
 	}
-	if !reflect.DeepEqual(items, want) {
+	if items := noIDs(items); !reflect.DeepEqual(items, want) {
 		t.Errorf("got  %+v\nwant %+v", items, want)
 	}
 }
@@ -188,7 +198,7 @@ func TestReadChatRewindPastTheTail(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "s.jsonl")
 	os.WriteFile(p, []byte(sb.String()), 0o644)
 	st, _ := os.Stat(p)
-	items, err := readChat("tego", p, st)
+	items, _, err := readChat("tego", p, st, chatMaxItems)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +208,7 @@ func TestReadChatRewindPastTheTail(t *testing.T) {
 		{Kind: "user", Text: "second try"},
 		{Kind: "assistant", Text: "new answer"},
 	}
-	if !reflect.DeepEqual(items, want) {
+	if items := noIDs(items); !reflect.DeepEqual(items, want) {
 		t.Errorf("got %d items, first %+v\nwant %+v", len(items), items[:min(len(items), 2)], want)
 	}
 
@@ -229,7 +239,7 @@ func TestParseCodex(t *testing.T) {
 		{Kind: "tools", Tools: []ChatTool{{Name: "shell", Detail: "bash -lc ls", Result: "a\nb"}}},
 		{Kind: "assistant", Text: "Two files."},
 	}
-	if !reflect.DeepEqual(items, want) {
+	if items := noIDs(items); !reflect.DeepEqual(items, want) {
 		t.Errorf("got  %+v\nwant %+v", items, want)
 	}
 }

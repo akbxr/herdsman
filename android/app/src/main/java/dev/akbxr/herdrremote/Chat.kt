@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -35,6 +36,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
@@ -46,8 +48,35 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import org.json.JSONObject
 
-/** One thing in an agent's conversation, as the Mac reads it from the transcript. */
-data class ChatItem(val kind: String, val text: String = "", val tools: List<ChatTool> = emptyList())
+/**
+ * One thing in an agent's conversation, as the Mac reads it from the
+ * transcript. [id]: stable while more is loaded above it; [images]: the
+ * pictures of a message you wrote (ChatImages.kt).
+ */
+data class ChatItem(
+    val kind: String,
+    val text: String = "",
+    val tools: List<ChatTool> = emptyList(),
+    val images: List<String> = emptyList(),
+    val id: String = "",
+)
+
+/** Items asked for at first; more as you scroll back, the whole conversation for a search. */
+const val CHAT_PAGE = 120
+const val CHAT_ALL = 20000
+private val CHAT_STEPS = listOf(CHAT_PAGE, 300, 800, 2000, 5000)
+
+fun nextChatLimit(limit: Int): Int = CHAT_STEPS.firstOrNull { it > limit } ?: CHAT_ALL
+
+/** The list's keys: the items' ids, unique (an item without one goes by its place). */
+fun chatKeys(items: List<ChatItem>): List<String> {
+    val seen = HashSet<String>()
+    return items.mapIndexed { i, it ->
+        var k = it.id.ifEmpty { "#$i" }
+        while (!seen.add(k)) k += "~"
+        k
+    }
+}
 
 data class ChatTool(val name: String, val detail: String, val result: String, val error: Boolean)
 
@@ -77,9 +106,11 @@ data class ChatLog(
     val items: List<ChatItem>?,
     val status: AgentEvent?,
     val live: List<String> = emptyList(),  // while it works: what its screen shows being written
+    val start: Boolean = true,             // the items begin the conversation: nothing older to load
+    val limit: Int = CHAT_PAGE,            // the most items asked for
 ) {
     companion object {
-        fun from(o: JSONObject): ChatLog {
+        fun from(o: JSONObject, asked: Int = CHAT_PAGE): ChatLog {
             val items = if (o.optBoolean("same")) null else o.optJSONArray("items")?.let { a ->
                 (0 until a.length()).map { i ->
                     val it = a.getJSONObject(i)
@@ -88,7 +119,8 @@ data class ChatLog(
                             t.getJSONObject(j).let { x -> ChatTool(x.optString("name"), x.optString("detail"), x.optString("result"), x.optBoolean("error")) }
                         }
                     } ?: emptyList()
-                    ChatItem(it.optString("kind"), it.optString("text"), tools)
+                    val images = it.optJSONArray("images")?.let { a -> (0 until a.length()).map { j -> a.getString(j) } } ?: emptyList()
+                    ChatItem(it.optString("kind"), it.optString("text"), tools, images, it.optString("id"))
                 }
             } ?: emptyList()
             return ChatLog(
@@ -98,6 +130,9 @@ data class ChatLog(
                 items = items,
                 status = o.optJSONObject("status")?.let(AgentEvent::from),
                 live = o.optJSONArray("live")?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: emptyList(),
+                // A Mac from before paging: all it has is all there is.
+                start = o.optBoolean("start", true),
+                limit = o.optInt("limit", asked),
             )
         }
     }
@@ -107,6 +142,11 @@ data class ChatLog(
  * The conversation, newest at the bottom, following new messages while you
  * are at the bottom. Below it, what the agent is doing now: working, or
  * waiting for you, with the answer buttons when it asks for approval.
+ *
+ * Scrolled near the top with more to come ([hasOlder]), it asks for older
+ * messages ([onLoadOlder]); they come in above without moving what you are
+ * reading (the items are keyed by their ids). With a [search], its matches
+ * are marked and the one shown is scrolled to.
  */
 @Composable
 fun ChatView(
@@ -118,29 +158,47 @@ fun ChatView(
     pending: List<String> = emptyList(),  // sent from here, not in the transcript yet
     loading: Boolean = false,
     live: List<String> = emptyList(),     // the screen's last lines while it works
+    list: LazyListState = rememberLazyListState(),
+    hasOlder: Boolean = false,            // older messages to load
+    loadingOlder: Boolean = false,        // asked for, on their way
+    reachedStart: Boolean = false,        // scrolled back to the very start: say so at the top
+    onLoadOlder: () -> Unit = {},
+    search: ChatSearch? = null,
     onAnswer: (String) -> Unit,
     onOption: (String) -> Unit = {},
     onOpenTerminal: () -> Unit,
 ) {
-    val list = rememberLazyListState()
-    val atBottom by remember {
+    val atBottom by remember(list) {
         derivedStateOf {
             val last = list.layoutInfo.visibleItemsInfo.lastOrNull()
             last == null || last.index >= list.layoutInfo.totalItemsCount - 2
         }
     }
+    val nearTop by remember(list) { derivedStateOf { list.firstVisibleItemIndex < 4 } }
     val working = status?.state == "working"
     // A tool call without its result while the agent works: running now.
     val running = working && items.lastOrNull()?.let { it.kind == "tools" && it.tools.lastOrNull()?.result.isNullOrEmpty() } == true
     val showLive = working && live.any { it.isNotBlank() }
     // "Thinking…" says nothing the live screen or a running tool doesn't.
     val foot = status != null && status.state in setOf("working", "blocked", "error") && !running && !showLive
-    val tail = items.size + pending.size + (if (showLive) 1 else 0) + (if (foot) 1 else 0)
+    val showStart = reachedStart && items.isNotEmpty()
+    val head = if (showStart) 1 else 0
+    val tail = head + items.size + pending.size + (if (showLive) 1 else 0) + (if (foot) 1 else 0)
+    val searching = search != null && search.query.isNotBlank()
     var first by remember { mutableStateOf(true) }
     LaunchedEffect(tail, items.lastOrNull(), live.lastOrNull()) {
         if (tail == 0) return@LaunchedEffect
         if (first) { list.scrollToItem(tail - 1); first = false }
-        else if (atBottom) list.animateScrollToItem(tail - 1)
+        else if (atBottom && !searching) list.animateScrollToItem(tail - 1)
+    }
+    // Near the top with more above: ask for it.
+    LaunchedEffect(nearTop, hasOlder, loadingOlder, first, items.size) {
+        if (nearTop && hasOlder && !loadingOlder && !first && items.isNotEmpty()) onLoadOlder()
+    }
+    // The match shown: its item brought up (again when older items come in above it).
+    val hit = search?.hits?.getOrNull(search.current)
+    LaunchedEffect(hit, search?.query) {
+        if (hit != null && !first) list.animateScrollToItem(head + hit.item)
     }
     if (loading && items.isEmpty()) {
         SkeletonList(modifier)
@@ -152,39 +210,78 @@ fun ChatView(
         }
         return
     }
-    SelectionContainer(modifier) {
-        LazyColumn(
-            state = list,
-            contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 12.dp, bottom = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-            modifier = Modifier.fillMaxSize(),
-        ) {
-            itemsIndexed(items, key = { i, _ -> i }) { i, it ->
-                when (it.kind) {
-                    "user" -> UserBubble(it.text)
-                    "assistant" -> Markdown(it.text)
-                    "tools" -> ToolRun(it.tools, running = running && i == items.lastIndex)
-                    else -> NoteLine(it.text)
+    val keys = remember(items) { chatKeys(items) }
+    Box(modifier) {
+        SelectionContainer(Modifier.fillMaxSize()) {
+            LazyColumn(
+                state = list,
+                // Loading older messages: room above the first item for the row that says so
+                // (padding, not an item: the list keeps its place by the first item's key).
+                contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = if (loadingOlder && hasOlder) 110.dp else 12.dp, bottom = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier.fillMaxSize(),
+            ) {
+                if (showStart) item(key = "start") { NoteLine("The start of the conversation") }
+                itemsIndexed(items, key = { i, _ -> keys[i] }) { i, it ->
+                    val marks = search?.marks(i)
+                    when (it.kind) {
+                        "user" -> UserBubble(it.text, images = it.images, marks = marks)
+                        "assistant" -> Markdown(it.text, marks = marks)
+                        "tools" -> ToolRun(it.tools, running = running && i == items.lastIndex, marks = marks)
+                        else -> NoteLine(it.text)
+                    }
                 }
+                itemsIndexed(pending, key = { i, _ -> "pending$i" }) { _, text -> UserBubble(text, sending = true) }
+                if (showLive) item(key = "live") { LiveScreen(live) }
+                if (foot) item(key = "status") { StatusFoot(status!!, agentName, prompt, onAnswer, onOption, onOpenTerminal) }
             }
-            itemsIndexed(pending, key = { i, _ -> "pending$i" }) { _, text -> UserBubble(text, sending = true) }
-            if (showLive) item(key = "live") { LiveScreen(live) }
-            if (foot) item(key = "status") { StatusFoot(status!!, agentName, prompt, onAnswer, onOption, onOpenTerminal) }
         }
+        // Over the list, not in it: the list keeps its place when the older items come in.
+        if (loadingOlder && hasOlder) OlderLoading(Modifier.align(Alignment.TopCenter))
+    }
+}
+
+/**
+ * Older messages on their way: a row at the top of the chat, the messages
+ * fading out under it, and a skeleton of what is coming.
+ */
+@Composable
+fun OlderLoading(modifier: Modifier = Modifier) {
+    Column(
+        modifier
+            .fillMaxWidth()
+            .background(Brush.verticalGradient(0.8f to Ink.night, 1f to Ink.night.copy(alpha = 0f)))
+            .padding(start = 14.dp, end = 14.dp, top = 12.dp, bottom = 14.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) { SkeletonBar(Modifier.fillMaxWidth(0.5f), height = 30) }
+        Spacer(Modifier.height(8.dp))
+        SkeletonBar(Modifier.fillMaxWidth(0.85f).align(Alignment.Start), height = 12)
+        Spacer(Modifier.height(10.dp))
+        ShimmerText("Loading earlier messages", Type.small.copy(fontSize = 12.sp), base = Ink.dust, light = Ink.text)
     }
 }
 
 @Composable
-private fun UserBubble(text: String, sending: Boolean = false) {
+private fun UserBubble(text: String, images: List<String> = emptyList(), sending: Boolean = false, marks: Marks? = null) {
+    var open by remember { mutableStateOf<String?>(null) }
+    open?.let { PictureViewer(it) { open = null } }
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.End) {
-        Box(
+        Column(
             Modifier
                 .widthIn(max = 310.dp)
                 .clip(RoundedCornerShape(16.dp, 16.dp, 4.dp, 16.dp))
                 .background(Ink.pen)
                 .border(1.dp, Ink.rule, RoundedCornerShape(16.dp, 16.dp, 4.dp, 16.dp))
-                .padding(horizontal = 14.dp, vertical = 10.dp),
-        ) { Text(text, style = Type.body, color = if (sending) Ink.text.copy(alpha = 0.7f) else Ink.text) }
+                .padding(horizontal = if (images.isNotEmpty() && text.isEmpty()) 6.dp else 14.dp, vertical = if (images.isNotEmpty() && text.isEmpty()) 6.dp else 10.dp),
+        ) {
+            if (images.isNotEmpty()) ChatPictures(images, onOpen = { open = it }, modifier = Modifier.padding(bottom = if (text.isEmpty()) 0.dp else 8.dp))
+            if (text.isNotEmpty()) {
+                val (shown, _) = marked(AnnotatedString(text), marks, 0)
+                Text(shown, style = Type.body, color = if (sending) Ink.text.copy(alpha = 0.7f) else Ink.text,
+                    modifier = revealIf(marks != null && marks.current >= 0, marks?.current ?: 0))
+            }
+        }
         if (sending) Text("Sent", style = Type.small.copy(fontSize = 11.sp), color = Ink.dust, modifier = Modifier.padding(top = 3.dp, end = 4.dp))
     }
 }
@@ -200,8 +297,10 @@ private fun NoteLine(text: String) {
 
 /** A run of tool calls, folded to one line: tap to see each. */
 @Composable
-private fun ToolRun(tools: List<ChatTool>, running: Boolean = false) {
-    var open by rememberSaveable(tools.size, tools.firstOrNull()?.detail) { mutableStateOf(false) }
+private fun ToolRun(tools: List<ChatTool>, running: Boolean = false, marks: Marks? = null) {
+    var unfolded by rememberSaveable(tools.size, tools.firstOrNull()?.detail) { mutableStateOf(false) }
+    val open = unfolded || marks != null  // a match of the search in it: shown
+    var occ = 0  // the matches before this piece, among the item's
     val failed = tools.count { it.error }
     val names = tools.map { it.name }.distinct()
     Column(
@@ -209,7 +308,7 @@ private fun ToolRun(tools: List<ChatTool>, running: Boolean = false) {
             .fillMaxWidth()
             .clip(RoundedCornerShape(10.dp))
             .border(1.dp, Ink.rule, RoundedCornerShape(10.dp))
-            .clickable(role = Role.Button, onClickLabel = if (open) "Fold the tool calls" else "Show the tool calls") { open = !open }
+            .clickable(role = Role.Button, onClickLabel = if (open) "Fold the tool calls" else "Show the tool calls") { unfolded = !unfolded }
             .animateContentSize()
             .padding(horizontal = 12.dp, vertical = 9.dp),
     ) {
@@ -236,16 +335,20 @@ private fun ToolRun(tools: List<ChatTool>, running: Boolean = false) {
         }
         if (open) {
             tools.forEach { t ->
-                Column(Modifier.padding(top = 10.dp)) {
+                val (detail, nd) = marked(AnnotatedString(t.detail), marks, occ)
+                val (result, nr) = marked(AnnotatedString(t.result), marks, occ + nd)
+                val here = marks != null && marks.current in occ until occ + nd + nr
+                occ += nd + nr
+                Column(Modifier.padding(top = 10.dp).then(revealIf(here, marks?.current ?: 0))) {
                     Text(
                         buildAnnotatedString {
                             withStyle(SpanStyle(color = if (t.error) Ink.red else Ink.text, fontWeight = FontWeight.Bold)) { append(t.name) }
-                            if (t.detail.isNotEmpty()) { append("  "); append(t.detail) }
+                            if (t.detail.isNotEmpty()) { append("  "); append(detail) }
                         },
                         style = Type.small.copy(fontFamily = JetBrains, fontSize = 12.sp), color = Ink.dust,
                     )
                     if (t.result.isNotEmpty()) {
-                        Text(t.result, style = Type.small.copy(fontFamily = JetBrains, fontSize = 11.sp, lineHeight = 15.sp),
+                        Text(result, style = Type.small.copy(fontFamily = JetBrains, fontSize = 11.sp, lineHeight = 15.sp),
                             color = if (t.error) Ink.red.copy(alpha = 0.85f) else Ink.dust.copy(alpha = 0.8f),
                             modifier = Modifier.padding(start = 12.dp, top = 2.dp))
                     }
@@ -353,9 +456,13 @@ private fun OptionButton(text: String, highlighted: Boolean, onClick: () -> Unit
  * scroll sideways rather than wrap).
  */
 @Composable
-fun Markdown(text: String, modifier: Modifier = Modifier) {
+fun Markdown(text: String, modifier: Modifier = Modifier, marks: Marks? = null) {
     Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        var occ = 0  // the matches of the search before this block, among the answer's
         mdBlocks(text).forEach { b ->
+            val (shown, n) = marked(shownText(b), marks, occ)
+            val reveal = revealIf(marks != null && marks.current in occ until occ + n, marks?.current ?: 0)
+            occ += n
             when (b) {
                 is MdBlock.Code -> Box(
                     Modifier
@@ -364,19 +471,20 @@ fun Markdown(text: String, modifier: Modifier = Modifier) {
                         .background(TermBg)
                         .border(1.dp, Ink.rule, RoundedCornerShape(8.dp))
                         .horizontalScroll(rememberScrollState())
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
-                ) { Text(b.text, style = Type.small.copy(fontFamily = JetBrains, fontSize = 12.sp, lineHeight = 17.sp), color = Ink.text, softWrap = false) }
-                is MdBlock.Heading -> Text(inline(b.text), style = Type.title.copy(fontSize = if (b.level <= 2) 17.sp else 15.sp), color = Ink.text)
-                is MdBlock.Quote -> Row {
+                        .padding(horizontal = 12.dp, vertical = 10.dp)
+                        .then(reveal),
+                ) { Text(shown, style = Type.small.copy(fontFamily = JetBrains, fontSize = 12.sp, lineHeight = 17.sp), color = Ink.text, softWrap = false) }
+                is MdBlock.Heading -> Text(shown, style = Type.title.copy(fontSize = if (b.level <= 2) 17.sp else 15.sp), color = Ink.text, modifier = reveal)
+                is MdBlock.Quote -> Row(reveal) {
                     Box(Modifier.width(3.dp).height(20.dp).background(Ink.rule))
                     Spacer(Modifier.width(10.dp))
-                    Text(inline(b.text), style = Type.body, color = Ink.dust)
+                    Text(shown, style = Type.body, color = Ink.dust)
                 }
-                is MdBlock.Item -> Row(Modifier.padding(start = (b.depth * 14).dp)) {
+                is MdBlock.Item -> Row(Modifier.padding(start = (b.depth * 14).dp).then(reveal)) {
                     Text(b.marker, style = Type.body, color = Ink.dust, modifier = Modifier.width(if (b.marker.length > 2) 26.dp else 16.dp))
-                    Text(inline(b.text), style = Type.body, color = Ink.text)
+                    Text(shown, style = Type.body, color = Ink.text)
                 }
-                is MdBlock.Para -> Text(inline(b.text), style = Type.body, color = Ink.text)
+                is MdBlock.Para -> Text(shown, style = Type.body, color = Ink.text, modifier = reveal)
             }
         }
     }
