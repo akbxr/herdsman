@@ -143,6 +143,7 @@ private fun App(link: String?, onLinkUsed: () -> Unit, openFromNotification: Str
             BackHandler { resumeList = false }
             SessionsScreen(
                 api = a, host = host,
+                app = herd?.app ?: true, cli = herd?.cli ?: false, workspaces = herd?.workspaces.orEmpty(),
                 onBack = { resumeList = false },
                 onTerminal = { t -> resumeList = false; section = Section.Herd; openTerminal = t },
             )
@@ -170,7 +171,7 @@ private fun App(link: String?, onLinkUsed: () -> Unit, openFromNotification: Str
             onDismiss = { newMenu = false },
             actions = listOfNotNull(
                 SheetAction("New task", "An agent in a folder you pick, on what you ask; opens here") { newMenu = false; newTask = true },
-                if (withApp) SheetAction("Resume a session", "Pick up an earlier tego or Claude Code conversation in a new tab") { newMenu = false; resumeList = true } else null,
+                SheetAction("Resume a session", "Pick up an earlier tego or Claude Code conversation in a new tab") { newMenu = false; resumeList = true },
                 if (withApp) SheetAction("New tab", "A shell or a program, in the folder of the terminal focused on the Mac") { newMenu = false; newTab = true } else null,
                 if (withCli) SheetAction(if (withApp) "New tab in herdr" else "New tab", "A shell, in herdr's focused workspace") {
                     newMenu = false

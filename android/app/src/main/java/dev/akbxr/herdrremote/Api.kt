@@ -463,8 +463,17 @@ class Api(val base: String, val token: String) {
      * Opens a tab in a session's folder resuming it; returns its terminal. A
      * session running already fails with [ApiError.terminal] set to its terminal.
      */
-    suspend fun resume(agent: String, id: String, machine: String = ""): String =
-        call("/api/resume", JSONObject().put("agent", agent).put("id", id).apply { if (machine.isNotEmpty()) put("machine", machine) }, timeoutMs = 30_000)
+    /** Resumes a session in a new tab: of the Herdr app, or with [cli] of the herdr CLI (in [workspace], or its focused one). */
+    suspend fun resume(agent: String, id: String, machine: String = "", cli: Boolean = false, workspace: String = ""): String =
+        call(
+            "/api/resume",
+            JSONObject().put("agent", agent).put("id", id).apply {
+                if (machine.isNotEmpty()) put("machine", machine)
+                if (cli) put("backend", "herdr")
+                if (cli && workspace.isNotEmpty()) put("workspace", workspace)
+            },
+            timeoutMs = 30_000,
+        )
             .optString("terminal").ifBlank { throw ApiError("The Mac opened the tab but didn't say which terminal it is.") }
 
     /**

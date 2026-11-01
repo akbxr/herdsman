@@ -503,6 +503,18 @@ class ScreensSnapshotTest {
 
     @Test fun sessionsLoading() = paparazzi.snapshot { Frame { Sessions(null) } }
 
+    @Test fun sessionsInHerdrCli() = paparazzi.snapshot {
+        Frame {
+            NoShimmer {
+                SessionsList(
+                    host = "AKBARs-MacBook-Air.local", sessions = sessionsAnywhere, now = now, loadProblem = null, onRetry = {},
+                    resuming = null, problem = null, onBack = {}, onSession = {},
+                    backends = true, cli = true, workspaces = workspaces, workspace = "wF",
+                )
+            }
+        }
+    }
+
     @Test fun sessionsEmpty() = paparazzi.snapshot { Frame { Sessions(EarlierSessions(home, emptyList())) } }
 
     @Test fun sessionsProblem() = paparazzi.snapshot {

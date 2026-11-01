@@ -23,6 +23,8 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -87,10 +89,10 @@ fun messagesText(n: Int, atLeast: Boolean): String =
  * Picks up a session: opens the terminal it runs in, or asks the Mac to
  * resume it in a new tab; [onTerminal] gets the terminal either way.
  */
-suspend fun resumeOrOpen(api: Api, s: EarlierSession, onTerminal: (String) -> Unit, machine: String = "") {
+suspend fun resumeOrOpen(api: Api, s: EarlierSession, onTerminal: (String) -> Unit, machine: String = "", cli: Boolean = false, workspace: String = "") {
     s.running?.let { onTerminal(it); return }
     try {
-        onTerminal(api.resume(s.agent, s.id, machine))
+        onTerminal(api.resume(s.agent, s.id, machine, cli, workspace))
     } catch (e: ApiError) {
         // It started running somewhere since the list came: open that one.
         e.terminal?.let { onTerminal(it); return }
@@ -103,8 +105,21 @@ suspend fun resumeOrOpen(api: Api, s: EarlierSession, onTerminal: (String) -> Un
  * up again in a new tab, or to open the terminal it runs in now.
  */
 @Composable
-fun SessionsScreen(api: Api, host: String, onBack: () -> Unit, onTerminal: (String) -> Unit) {
+fun SessionsScreen(
+    api: Api,
+    host: String,
+    onBack: () -> Unit,
+    onTerminal: (String) -> Unit,
+    app: Boolean = true,      // the Herdr app runs
+    cli: Boolean = false,     // the herdr CLI runs
+    workspaces: List<Workspace> = emptyList(),  // herdr's, focused first
+) {
     val scope = rememberCoroutineScope()
+    // Where it opens: the herdr CLI when only it runs; asked when both do.
+    var pickedCli by rememberSaveable { mutableStateOf(false) }
+    val inCli = cli && (!app || pickedCli)
+    var pickedWorkspace by rememberSaveable { mutableStateOf<String?>(null) }
+    val workspace = workspaces.firstOrNull { it.id == pickedWorkspace }?.id ?: workspaces.firstOrNull()?.id ?: ""
     var sessions by remember { mutableStateOf<EarlierSessions?>(null) }
     var loadProblem by remember { mutableStateOf<String?>(null) }
     var attempt by remember { mutableIntStateOf(0) }
@@ -125,12 +140,18 @@ fun SessionsScreen(api: Api, host: String, onBack: () -> Unit, onTerminal: (Stri
         resuming = resuming,
         problem = problem,
         onBack = onBack,
+        backends = app && cli,
+        cli = inCli,
+        onCli = { pickedCli = it },
+        workspaces = if (inCli) workspaces else emptyList(),
+        workspace = workspace,
+        onWorkspace = { pickedWorkspace = it },
         onSession = pick@{ s ->
             if (resuming != null) return@pick
             resuming = s.id
             problem = null
             scope.launch {
-                runCatching { resumeOrOpen(api, s, onTerminal) }.onFailure { problem = it.advice() }
+                runCatching { resumeOrOpen(api, s, onTerminal, cli = inCli, workspace = workspace) }.onFailure { problem = it.advice() }
                 resuming = null
             }
         },
@@ -149,6 +170,12 @@ fun SessionsList(
     problem: String?,
     onBack: () -> Unit,
     onSession: (EarlierSession) -> Unit,
+    backends: Boolean = false,  // both the Herdr app and the herdr CLI run: ask which
+    cli: Boolean = false,       // it opens in the herdr CLI
+    onCli: (Boolean) -> Unit = {},
+    workspaces: List<Workspace> = emptyList(),  // herdr's; one or none: no chooser
+    workspace: String = "",
+    onWorkspace: (String) -> Unit = {},
 ) {
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 32.dp)) {
         item {
@@ -167,10 +194,28 @@ fun SessionsList(
                 Text("Resume", style = Type.headline, color = Ink.text)
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    "Pick up a tego or Claude Code conversation where it stopped. It opens in a new tab in its folder, and here.",
+                    "Pick up a tego or Claude Code conversation where it stopped. It opens in a new tab in its folder" +
+                        (if (cli) " in herdr" else "") + ", and here.",
                     style = Type.body, color = Ink.dust,
                 )
                 Spacer(Modifier.height(16.dp))
+                if (backends) {
+                    Text("Open in", style = Type.label, color = Ink.dust)
+                    Spacer(Modifier.height(8.dp))
+                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        ChoiceChip("Herdr app", selected = !cli) { onCli(false) }
+                        ChoiceChip("herdr CLI", selected = cli) { onCli(true) }
+                    }
+                    Spacer(Modifier.height(16.dp))
+                }
+                if (cli && workspaces.size > 1) {
+                    Text("Workspace", style = Type.label, color = Ink.dust)
+                    Spacer(Modifier.height(8.dp))
+                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        workspaces.forEach { w -> ChoiceChip(w.label, selected = w.id == workspace) { onWorkspace(w.id) } }
+                    }
+                    Spacer(Modifier.height(16.dp))
+                }
                 loadProblem?.let { Notice(it, action = "Try again" to onRetry); Spacer(Modifier.height(16.dp)) }
                 problem?.let { Notice(it); Spacer(Modifier.height(16.dp)) }
             }

@@ -919,6 +919,64 @@ func TestHerdrTask(t *testing.T) {
 	}
 }
 
+func TestHerdrResume(t *testing.T) {
+	h := newSessionHome(t)
+	h.fill(t)
+	f := newFakeHerdr(t)
+	f.on("session.snapshot", snapshotAnswer(fakeSnapshot))
+	f.on("tab.create", func(p map[string]any) (any, *herdrError) {
+		return map[string]any{"type": "tab_created", "tab": map[string]any{"tab_id": p["workspace_id"].(string) + ":t5", "workspace_id": p["workspace_id"]},
+			"root_pane": map[string]any{"pane_id": p["workspace_id"].(string) + ":p9"}}, nil
+	})
+	f.on("pane.send_input", okAnswer)
+	herdrApp, appCalls := fakeTool(t, "herdr-app", `echo '{"space":"sp1","tab":"tb9","terminal":"t21"}'`)
+	s := h.server(t, map[string]string{"t5": h.paths[tegoB]})
+	s.herdr = herdrApp
+	s.herdrSock = f.sock
+	post := func(body any) (int, map[string]string) {
+		b, _ := json.Marshal(body)
+		rec := httptest.NewRecorder()
+		s.resume(rec, httptest.NewRequest("POST", "/api/resume", strings.NewReader(string(b))))
+		var out map[string]string
+		json.Unmarshal(rec.Body.Bytes(), &out)
+		return rec.Code, out
+	}
+
+	code, out := post(map[string]string{"agent": "tego", "id": tegoA, "backend": "herdr", "workspace": "w2"})
+	if code != 200 || out["terminal"] != "herdr:w2:p9" || out["tab"] != "w2:t5" || out["cwd"] != h.api {
+		t.Fatalf("resume: %d %v", code, out)
+	}
+	if p := f.took("tab.create"); len(p) != 1 || !reflect.DeepEqual(p[0], map[string]any{"workspace_id": "w2", "cwd": h.api, "focus": false}) {
+		t.Errorf("tab.create: %v", p)
+	}
+	if in := f.took("pane.send_input"); len(in) != 1 || in[0]["text"] != "tego --resume "+tegoA || fmt.Sprint(in[0]["keys"]) != "[enter]" {
+		t.Errorf("send_input: %v", in)
+	}
+	if c := readCalls(t, appCalls); c != "" {
+		t.Errorf("herdr-app called: %s", c)
+	}
+
+	// Its focused workspace by default.
+	f.reset()
+	if code, out := post(map[string]string{"agent": "claude", "id": claudeA, "backend": "herdr"}); code != 200 || out["terminal"] != "herdr:wF:p9" {
+		t.Errorf("focused: %d %v", code, out)
+	}
+
+	f.reset()
+	for _, b := range []map[string]string{
+		{"agent": "tego", "id": tegoA, "backend": "tmux"},
+		{"agent": "tego", "id": tegoA, "workspace": "wF"},                      // a workspace without the CLI
+		{"agent": "tego", "id": tegoA, "backend": "herdr", "workspace": "x y"}, // not a workspace id
+	} {
+		if code, _ := post(b); code != 400 {
+			t.Errorf("%v: %d", b, code)
+		}
+	}
+	if m := f.methods(); len(m) != 0 {
+		t.Errorf("herdr called: %v", m)
+	}
+}
+
 func TestShellJoin(t *testing.T) {
 	if got := shellJoin([]string{"claude", "--model", "opus", "it's", "", "a b"}); got != `claude --model opus 'it'\''s' '' 'a b'` {
 		t.Errorf("%s", got)

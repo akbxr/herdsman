@@ -734,6 +734,10 @@ func (s *server) resume(w http.ResponseWriter, r *http.Request) {
 		Model    string `json:"model"`
 		Thinking string `json:"thinking"`
 		Machine  string `json:"machine"`
+		// "herdr": in a new tab of the herdr CLI (in Workspace, or its
+		// focused one) rather than the Herdr app; as /api/task.
+		Backend   string `json:"backend"`
+		Workspace string `json:"workspace"`
 	}
 	if err := decode(r, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, errors.New("need {agent, id}"))
@@ -741,6 +745,19 @@ func (s *server) resume(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Machine != "" {
 		writeErr(w, http.StatusBadRequest, errors.New("Earlier sessions are resumed on this Mac only."))
+		return
+	}
+	cli := false
+	switch req.Backend {
+	case "", "app", "herdr-app":
+	case "herdr":
+		cli = true
+	default:
+		writeErr(w, http.StatusBadRequest, errors.New(`backend is "herdr" (the herdr CLI) or left out (the Herdr app)`))
+		return
+	}
+	if req.Workspace != "" && (!cli || !herdrWorkspaceRe.MatchString(req.Workspace)) {
+		writeErr(w, http.StatusBadRequest, errors.New(`workspace: a herdr CLI workspace id ("wF"), with "backend": "herdr"`))
 		return
 	}
 	if req.Agent != "tego" && req.Agent != "claude" {
@@ -784,7 +801,13 @@ func (s *server) resume(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	argv := append(append(append([]string(nil), agent.Argv...), flags...), "--resume", req.ID)
-	made, code, err := s.openTab(r.Context(), h.cwd, argv)
+	var made tabMade
+	var code int
+	if cli {
+		made, code, err = s.openHerdrTab(r.Context(), req.Workspace, h.cwd, argv)
+	} else {
+		made, code, err = s.openTab(r.Context(), h.cwd, argv)
+	}
 	if err != nil {
 		writeErr(w, code, err)
 		return

@@ -132,10 +132,9 @@ fun NewTaskScreen(
         sessions = null
         sessionsNote = ""
         resumeProblem = null
-        // Resuming opens a tab in the Herdr app: not offered for the herdr CLI.
-        if (inCli) return@LaunchedEffect
         val cwd = picked ?: return@LaunchedEffect
-        val found = runCatching { api.sessions(cwd, machine) }.getOrNull()
+        // The herdr CLI runs on this Mac: its sessions are the Mac's.
+        val found = runCatching { api.sessions(cwd, if (inCli) "" else machine) }.getOrNull()
         sessions = found?.list.orEmpty()
         sessionsNote = found?.note.orEmpty()
     }
@@ -241,7 +240,7 @@ fun NewTaskScreen(
             resuming = s.id
             resumeProblem = null
             scope.launch {
-                runCatching { resumeOrOpen(api, s, onStarted, machine) }.onFailure { resumeProblem = it.advice() }
+                runCatching { resumeOrOpen(api, s, onStarted, machine, cli = inCli, workspace = workspace.takeIf { inCli }.orEmpty()) }.onFailure { resumeProblem = it.advice() }
                 resuming = null
             }
         },
@@ -601,7 +600,11 @@ private fun MachineChip(label: String, state: String?, selected: Boolean, onClic
 }
 
 @Composable
-private fun AgentChip(name: String, selected: Boolean, onClick: () -> Unit) {
+private fun AgentChip(name: String, selected: Boolean, onClick: () -> Unit) = ChoiceChip(name, selected, onClick)
+
+/** One of a few choices, as a chip (an agent, where a task runs, a workspace). */
+@Composable
+fun ChoiceChip(name: String, selected: Boolean, onClick: () -> Unit) {
     Box(
         Modifier
             .heightIn(min = 44.dp)
