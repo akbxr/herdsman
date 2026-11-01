@@ -31,12 +31,17 @@ commands on your Mac. So:
 
 ## Mac: install the server
 
-Once:
+Download `herdsman-<version>-darwin-arm64` (Apple silicon) or `-darwin-amd64`
+(Intel) from the [latest release](https://github.com/akbxr/herdsman/releases/latest),
+then once:
 
 ```sh
-cd server
-go run . install
+chmod +x herdsman-*-darwin-arm64
+xattr -d com.apple.quarantine herdsman-*-darwin-arm64 2>/dev/null  # downloaded with a browser
+./herdsman-*-darwin-arm64 install
 ```
+
+Or from the source: `cd server && go run . install`.
 
 That copies `herdsman` to `~/.local/bin`, and starts it at every login
 through launchd (it restarts if it stops, and waits for Tailscale if it
@@ -80,7 +85,12 @@ minutes, and stops working after five wrong tries.
 
 ## Phone: install the app
 
-Build it (needs the Android SDK; Android Studio's JDK works):
+Download `herdsman-<version>.apk` from the
+[latest release](https://github.com/akbxr/herdsman/releases/latest) on the
+phone and open it (allow installing from that app), or `adb install -r` it.
+Each release installs over the last one and keeps the pairing.
+
+Or build it (needs the Android SDK; Android Studio's JDK works):
 
 ```sh
 cd android
@@ -88,12 +98,12 @@ export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
 ./gradlew assembleRelease
 ```
 
-The APK is `android/app/build/outputs/apk/release/app-release.apk`. Install it
-with `adb install -r app-release.apk` (USB debugging on), or copy it to the
-phone and open it (allow installing from that app). Use the release build: it
-is shrunk and optimised by R8 and carries Compose's baseline profiles, and
-scrolls several times smoother than the debug one. Both are signed with the
-debug key, so one installs over the other and keeps the pairing.
+The APK is `android/app/build/outputs/apk/release/app-release.apk`. Use the
+release build: it is shrunk and optimised by R8 and scrolls several times
+smoother than the debug one. It is signed with the release key when
+`~/.android/herdsman-release.properties` points at it (so it installs over a
+published APK), else with your debug key (then uninstall a published one
+first).
 
 Open **Herdsman** and pair:
 
@@ -295,6 +305,31 @@ reports dropped; `resize` and `reply` ignored (the herdr TUI owns the size).
 
 The terminal page (`android/app/src/main/assets/term/terminal.html`) also
 opens in a desktop browser for debugging: `terminal.html#ws=<attach URL>`.
+
+## Releases
+
+Versions come from the commit messages ([Conventional
+Commits](https://www.conventionalcommits.org)): on every push to `master`,
+[release-please](https://github.com/googleapis/release-please) keeps a release
+pull request up to date with the next version (`fix:` a patch, `feat:` a minor
+one; before 1.0 a breaking change is a minor one too) and the CHANGELOG.
+Merging it bumps the version in `android/app/build.gradle.kts` and
+`server/main.go`, tags `vX.Y.Z` and publishes the release. Then
+`.github/workflows/release.yml` builds and attaches:
+
+- `herdsman-X.Y.Z.apk`, signed with the release key (its `versionCode` follows
+  from the version: 1.2.3 is 10203),
+- `herdsman-X.Y.Z-darwin-arm64` and `-darwin-amd64`, the server,
+- `SHA256SUMS`.
+
+The release key is in the repository secrets `HERDSMAN_KEYSTORE_BASE64`,
+`HERDSMAN_KEYSTORE_PASSWORD`, `HERDSMAN_KEY_ALIAS` and
+`HERDSMAN_KEY_PASSWORD`. Keep a copy of the keystore elsewhere: an app signed
+with another key can't update the installed one. To build a release's files
+again, run the Release workflow by hand with its tag.
+
+`.github/workflows/ci.yml` runs the server's tests on macOS and the app's
+build, unit tests and screen snapshots on every push and pull request.
 
 ## Snapshots
 

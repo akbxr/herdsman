@@ -1,0 +1,98 @@
+name: Release
+
+# On every push to master release-please keeps a release PR up to date: the
+# next version (from the Conventional Commits since the last release) and its
+# CHANGELOG. Merging that PR tags the release and publishes it; then the
+# signed APK and the server binaries are built and attached to it.
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to build and attach the files for again (e.g. v0.2.0)
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    outputs:
+      created: ${{ steps.rp.outputs.release_created }}
+      tag: ${{ steps.rp.outputs.tag_name }}
+    steps:
+      - id: rp
+        uses: googleapis/release-please-action@v5
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  files:
+    name: APK and server binaries
+    needs: release-please
+    if: always() && (needs.release-please.outputs.created == 'true' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ needs.release-please.outputs.tag || inputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.TAG }}
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v6
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+      - name: version
+        run: echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
+
+      - name: release key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.HERDSMAN_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then echo "The HERDSMAN_KEYSTORE_BASE64 secret is missing"; exit 1; fi
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+          echo "HERDSMAN_KEYSTORE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+      - name: APK
+        working-directory: android
+        env:
+          HERDSMAN_KEYSTORE_PASSWORD: ${{ secrets.HERDSMAN_KEYSTORE_PASSWORD }}
+          HERDSMAN_KEY_ALIAS: ${{ secrets.HERDSMAN_KEY_ALIAS }}
+          HERDSMAN_KEY_PASSWORD: ${{ secrets.HERDSMAN_KEY_PASSWORD }}
+        run: |
+          ./gradlew assembleRelease --console=plain
+          apk=app/build/outputs/apk/release/app-release.apk
+          # Signed with the release key, not the debug one: else it wouldn't
+          # install over the last release.
+          "$ANDROID_HOME"/build-tools/$(ls "$ANDROID_HOME"/build-tools | sort -V | tail -1)/apksigner verify --print-certs "$apk" | tee certs.txt
+          grep -q "CN=Herdsman" certs.txt
+          cp "$apk" "$RUNNER_TEMP/herdsman-$VERSION.apk"
+      - name: server binaries
+        working-directory: server
+        run: |
+          for arch in arm64 amd64; do
+            CGO_ENABLED=0 GOOS=darwin GOARCH=$arch go build -trimpath \
+              -ldflags "-s -w -X main.version=$VERSION" \
+              -o "$RUNNER_TEMP/herdsman-$VERSION-darwin-$arch" .
+          done
+      - name: checksums
+        working-directory: ${{ runner.temp }}
+        run: sha256sum herdsman-* > SHA256SUMS && cat SHA256SUMS
+      - uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ env.TAG }}
+          files: |
+            ${{ runner.temp }}/herdsman-*
+            ${{ runner.temp }}/SHA256SUMS
+      - name: forget the key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release.jks"

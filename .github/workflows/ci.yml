@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  server:
+    name: Server (go vet, go test)
+    # The server is a macOS program (launchd, lsof, caffeinate): test it there.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+      - name: gofmt
+        working-directory: server
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then echo "Not gofmt'ed:"; echo "$unformatted"; exit 1; fi
+      - name: vet and test
+        working-directory: server
+        run: go vet ./... && go test ./...
+
+  android:
+    name: Android (build, unit tests, screen snapshots)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v6
+      - name: build and test
+        working-directory: android
+        run: ./gradlew assembleDebug testDebugUnitTest verifyPaparazziDebug --console=plain
+      - name: snapshot differences
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: paparazzi-failures
+          path: android/app/out/failures
+          if-no-files-found: ignore
