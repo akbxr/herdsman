@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -63,8 +64,21 @@ var (
 // Shells: the foreground before (and after) the agent runs.
 var shells = map[string]bool{"zsh": true, "bash": true, "fish": true, "sh": true, "dash": true, "ksh": true, "tcsh": true, "csh": true, "nu": true, "login": true}
 
+// GET /api/agents[?machine=box]: the agents a task can start (on box).
 func (s *server) agentsHandler(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, map[string]any{"agents": s.agents()})
+	m := r.URL.Query().Get("machine")
+	if !validMachine(m) {
+		writeErr(w, http.StatusBadRequest, errors.New("bad machine name"))
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	list, err := s.agentsOn(ctx, s.on(m))
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, map[string]any{"agents": list})
 }
 
 // agents: the known agents that are installed, then the other programs in
@@ -75,20 +89,79 @@ func (s *server) agents() []AgentInfo {
 	if have == nil {
 		have = toolInstalled
 	}
+	return s.agentsWith(have)
+}
+
+// On another machine: which of the programs named are there, on its PATH or
+// in the folders a login shell adds (as toolInstalled checks here).
+const toolsScript = `for n; do
+  case "$n" in
+  */*) [ -f "$n" ] && [ -x "$n" ] && echo "$n"; continue;;
+  esac
+  if command -v "$n" >/dev/null 2>&1; then echo "$n"; continue; fi
+  for d in "$HOME/.local/bin" "$HOME/bin" "$HOME/.bun/bin" "$HOME/.npm-global/bin" "$HOME/go/bin" "$HOME/.cargo/bin" "$HOME/.volta/bin" "$HOME/.deno/bin" /opt/homebrew/bin /usr/local/bin; do
+    if [ -f "$d/$n" ] && [ -x "$d/$n" ]; then echo "$n"; break; fi
+  done
+done`
+
+// agentsOn: agents for a task on h: what is installed there, checked in one
+// round trip (programs.json is this Mac's Herdr's, its programs too must be
+// there).
+func (s *server) agentsOn(ctx context.Context, h host) ([]AgentInfo, error) {
+	if !h.remote() {
+		return s.agents(), nil
+	}
+	var names []string
+	seen := map[string]bool{}
+	add := func(n string) {
+		if n != "" && !seen[n] {
+			seen[n] = true
+			names = append(names, n)
+		}
+	}
+	for _, a := range knownAgents {
+		add(a.Argv[0])
+	}
+	for _, p := range s.programs().Programs {
+		if len(p.Run) > 0 {
+			add(p.Run[0])
+		}
+	}
+	out, err := h.run(ctx, "", append([]string{"sh", "-c", toolsScript, "sh"}, names...)...)
+	if err != nil {
+		return nil, err
+	}
+	there := map[string]bool{}
+	for _, l := range strings.Split(string(out), "\n") {
+		there[strings.TrimSpace(l)] = true
+	}
+	return s.agentsWith(func(n string) bool { return there[n] }), nil
+}
+
+// programsJSON is Herdr's programs.json.
+type programsJSON struct {
+	Programs map[string]struct {
+		Name string   `json:"name"`
+		Run  []string `json:"run"`
+	} `json:"programs"`
+}
+
+func (s *server) programs() programsJSON {
 	file := s.programsFile
 	if file == "" {
 		home, _ := os.UserHomeDir()
 		file = filepath.Join(home, ".config", "herdr-app", "programs.json")
 	}
-	var progs struct {
-		Programs map[string]struct {
-			Name string   `json:"name"`
-			Run  []string `json:"run"`
-		} `json:"programs"`
-	}
+	var progs programsJSON
 	if b, err := os.ReadFile(file); err == nil {
 		json.Unmarshal(b, &progs)
 	}
+	return progs
+}
+
+// agentsWith: agents, with have telling what is installed.
+func (s *server) agentsWith(have func(string) bool) []AgentInfo {
+	progs := s.programs()
 
 	list := []AgentInfo{}
 	known := map[string]int{}
@@ -177,8 +250,9 @@ func taskLaunch(a AgentInfo, prompt string, flags ...string) (argv []string, del
 }
 
 // task starts one: {"cwd": "/Users/me/Code/app", "agent": "claude",
-// "prompt": "…", "model": "claude-sonnet-5-5", "thinking": "high"};
-// model and thinking are optional (the agent's own default).
+// "prompt": "…", "model": "claude-sonnet-5-5", "thinking": "high",
+// "machine": "box"}; model and thinking are optional (the agent's own
+// default), machine too (this Mac; else cwd is a folder there).
 func (s *server) task(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Cwd      string `json:"cwd"`
@@ -186,18 +260,30 @@ func (s *server) task(w http.ResponseWriter, r *http.Request) {
 		Prompt   string `json:"prompt"`
 		Model    string `json:"model"`
 		Thinking string `json:"thinking"`
+		Machine  string `json:"machine"`
 	}
 	if err := decode(r, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, errors.New("need {cwd, agent, prompt}"))
 		return
 	}
-	cwd := filepath.Clean(req.Cwd)
-	if req.Cwd == "" || !filepath.IsAbs(cwd) {
+	if !validMachine(req.Machine) {
+		writeErr(w, http.StatusBadRequest, errors.New("bad machine name"))
+		return
+	}
+	h := s.on(req.Machine)
+	where := "the Mac"
+	if h.remote() {
+		where = req.Machine
+	}
+	cwd := path.Clean(req.Cwd)
+	if req.Cwd == "" || !path.IsAbs(cwd) {
 		writeErr(w, http.StatusBadRequest, errors.New("the folder must be a full path"))
 		return
 	}
-	if !isDir(cwd) {
-		writeErr(w, http.StatusBadRequest, fmt.Errorf("%s is not a folder on the Mac", cwd))
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	if !h.isDir(ctx, cwd) {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("%s is not a folder on %s", cwd, where))
 		return
 	}
 	prompt := strings.TrimSpace(req.Prompt)
@@ -205,8 +291,13 @@ func (s *server) task(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, errors.New("the task is too long (32 KB at most)"))
 		return
 	}
+	list, err := s.agentsOn(ctx, h)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
 	var agent *AgentInfo
-	for _, a := range s.agents() {
+	for _, a := range list {
 		if a.ID == req.Agent {
 			found := a
 			agent = &found
@@ -214,7 +305,7 @@ func (s *server) task(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if agent == nil {
-		writeErr(w, http.StatusBadRequest, fmt.Errorf("no agent %q on the Mac", req.Agent))
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("no agent %q on %s", req.Agent, where))
 		return
 	}
 
@@ -225,7 +316,7 @@ func (s *server) task(w http.ResponseWriter, r *http.Request) {
 	}
 
 	argv, delivery := taskLaunch(*agent, prompt, flags...)
-	made, code, err := s.openTab(r.Context(), cwd, argv)
+	made, code, err := s.openTabOn(r.Context(), req.Machine, cwd, argv)
 	if err != nil {
 		writeErr(w, code, err)
 		return
@@ -274,6 +365,84 @@ func (s *server) openTab(ctx context.Context, folder string, argv []string) (tab
 		return tabMade{}, http.StatusBadGateway, fmt.Errorf("herdr-app made the tab but didn't name its terminal: %s", strings.TrimSpace(string(out)))
 	}
 	return made, 0, nil
+}
+
+// openTabOn: openTab on a machine: a new tab in a space of the window's on
+// that machine (the active one first), else a new space there.
+func (s *server) openTabOn(ctx context.Context, machine, folder string, argv []string) (tabMade, int, error) {
+	if machine == "" {
+		return s.openTab(ctx, folder, argv)
+	}
+	ls, err := s.herdrSpaces(ctx)
+	if err != nil {
+		return tabMade{}, http.StatusBadGateway, fmt.Errorf("herdr-app: %w (is the Herdr window open?)", err)
+	}
+	space := ""
+	for _, sp := range ls {
+		if sp.Machine != nil && *sp.Machine == machine && (space == "" || sp.Active) {
+			space = sp.ID
+		}
+	}
+	cmd, args := "space.new", map[string]any{"machine": machine, "folder": folder, "argv": argv}
+	if space != "" {
+		cmd, args = "tab.new", map[string]any{"space": space, "folder": folder, "argv": argv}
+	}
+	js, _ := json.Marshal(args)
+	out, err := run(ctx, 30*time.Second, s.herdr, "do", cmd, string(js))
+	if err != nil {
+		return tabMade{}, http.StatusBadGateway, fmt.Errorf("herdr-app: %w (is the Herdr window open?)", err)
+	}
+	var made tabMade
+	json.Unmarshal(out, &made)
+	if made.Terminal == "" && made.Tab != "" {
+		// Not named: the terminal of the tab it made, from the window's list.
+		if again, err := s.herdrSpaces(ctx); err == nil {
+			for _, sp := range again {
+				for _, t := range sp.Tabs {
+					if t.ID == made.Tab && len(t.Terminals) > 0 {
+						made.Terminal = t.Terminals[0].Terminal
+					}
+				}
+			}
+		}
+	}
+	if made.Terminal != "" && !strings.Contains(made.Terminal, "/") {
+		made.Terminal = machine + "/" + made.Terminal
+	}
+	if !validTerminal(made.Terminal) {
+		return tabMade{}, http.StatusBadGateway, fmt.Errorf("herdr-app made the tab but didn't name its terminal: %s", strings.TrimSpace(string(out)))
+	}
+	return made, 0, nil
+}
+
+// herdrSpace is a space of the Herdr window (herdr-app ls).
+type herdrSpace struct {
+	ID      string  `json:"id"`
+	Name    string  `json:"name"`
+	Folder  string  `json:"folder"`
+	Machine *string `json:"machine"` // nil: this Mac
+	Active  bool    `json:"active"`
+	Tabs    []struct {
+		ID        string `json:"id"`
+		Terminals []struct {
+			Terminal string `json:"terminal"`
+		} `json:"terminals"`
+	} `json:"tabs"`
+}
+
+// herdrSpaces: the spaces of the Herdr window.
+func (s *server) herdrSpaces(ctx context.Context) ([]herdrSpace, error) {
+	out, err := run(ctx, 5*time.Second, s.herdr, "ls")
+	if err != nil {
+		return nil, err
+	}
+	var ls struct {
+		Spaces []herdrSpace `json:"spaces"`
+	}
+	if err := json.Unmarshal(out, &ls); err != nil {
+		return nil, fmt.Errorf("herdr-app ls: %w", err)
+	}
+	return ls.Spaces, nil
 }
 
 // typeWhenReady waits for the program to start in the terminal and settle

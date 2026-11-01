@@ -14,6 +14,7 @@ package main
 import (
 	"bytes"
 	"container/list"
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -27,6 +28,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -58,6 +60,7 @@ type chatImage struct {
 	mime  string
 	data  []byte // a block's bytes; nil for a file
 	path  string // a file
+	host  host   // the machine the file is on
 	size  int64
 	mtime time.Time
 }
@@ -107,9 +110,17 @@ type imageStore struct {
 	blocks *lru // id → *chatImage with data
 	files  *lru // id → *chatImage with a path
 	thumbs *lru // id@w → []byte
+	// Paths named in messages on other machines, checked there: machine
+	// NUL path as written → the picture (nil: not one, until checked again).
+	remote map[string]remoteImage
 }
 
-var images = &imageStore{blocks: newLRU(imageBlockBytes), files: newLRU(imageFilesKept), thumbs: newLRU(thumbBytes)}
+type remoteImage struct {
+	at  time.Time
+	img *chatImage
+}
+
+var images = &imageStore{blocks: newLRU(imageBlockBytes), files: newLRU(imageFilesKept), thumbs: newLRU(thumbBytes), remote: map[string]remoteImage{}}
 
 var imageIDRe = regexp.MustCompile(`^[bf][0-9a-f]{24}$`)
 
@@ -227,11 +238,151 @@ func (s *imageStore) addFile(p string) string {
 	return id
 }
 
+// resolver: how pictures named by path are found in a transcript on h: here
+// right away; on another machine in what prefetch checked there.
+func (s *imageStore) resolver(h host) func(string) string {
+	if !h.remote() {
+		return s.addFile
+	}
+	return func(p string) string { return s.remoteFile(h.machine, p) }
+}
+
+// The largest picture of another machine's: what one hc exec hands back.
+const remoteImageMax = remoteReadMax
+
+// How long a path on another machine that wasn't a picture stays so.
+const remoteImageMiss = 2 * time.Minute
+
+// remoteFile: the id of a picture on a machine that prefetch found at p.
+func (s *imageStore) remoteFile(machine, p string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.remote[machine+"\x00"+p]
+	if !ok || e.img == nil {
+		return ""
+	}
+	id := imageID("f", machine, e.img.path, strconv.FormatInt(e.img.size, 10), strconv.FormatInt(e.img.mtime.UnixNano(), 10))
+	if _, ok := s.files.get(id); !ok {
+		s.files.add(id, e.img, 1)
+	}
+	return id
+}
+
+// prefetch checks, in one round trip to h, the picture paths that the
+// messages you wrote among lines name and that weren't checked yet.
+func (s *imageStore) prefetch(ctx context.Context, h host, lines [][]byte) {
+	var named []string
+	seen := map[string]bool{}
+	s.mu.Lock()
+	for _, l := range lines {
+		if !bytes.Contains(l, []byte(`"user"`)) {
+			continue
+		}
+		var cands []string
+		for _, m := range imageMarkRe.FindAllSubmatch(l, -1) {
+			if len(m[1]) > 0 {
+				cands = append(cands, strings.TrimSpace(string(m[1])))
+			}
+		}
+		for _, m := range imagePathRe.FindAll(l, -1) {
+			cands = append(cands, string(m))
+		}
+		for _, p := range cands {
+			key := h.machine + "\x00" + p
+			e, known := s.remote[key]
+			if seen[p] || known && (e.img != nil || time.Since(e.at) < remoteImageMiss) {
+				continue
+			}
+			seen[p] = true
+			if len(named) < 200 {
+				named = append(named, p)
+			}
+		}
+	}
+	s.mu.Unlock()
+	if len(named) == 0 {
+		return
+	}
+	var home string
+	var paths, asked []string
+	for _, p := range named {
+		full, ok := remoteImagePath(ctx, h, p, &home)
+		if ok {
+			paths, asked = append(paths, full), append(asked, p)
+		}
+	}
+	sts, err := h.stat(ctx, paths...)
+	if err != nil {
+		return // not reached: checked again next time
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.remote) > 4096 {
+		clear(s.remote)
+	}
+	now := time.Now()
+	for _, p := range named {
+		s.remote[h.machine+"\x00"+p] = remoteImage{at: now}
+	}
+	for i, st := range sts {
+		if st.isFile() && !st.link && st.size > 0 && st.size <= remoteImageMax {
+			mime := "image/" + strings.TrimPrefix(strings.ToLower(path.Ext(paths[i])), ".")
+			if mime == "image/jpg" {
+				mime = "image/jpeg"
+			}
+			s.remote[h.machine+"\x00"+asked[i]] = remoteImage{now, &chatImage{mime: mime, path: paths[i], host: h, size: st.size, mtime: st.mtime}}
+		}
+	}
+}
+
+// remoteImagePath: a path named in a message as a full path on h, if it can
+// be a picture there (absolute or ~/, no "..", a picture's extension).
+func remoteImagePath(ctx context.Context, h host, p string, home *string) (string, bool) {
+	for _, part := range strings.Split(p, "/") {
+		if part == ".." {
+			return "", false
+		}
+	}
+	if strings.HasPrefix(p, "~/") {
+		if *home == "" {
+			var err error
+			if *home, err = h.homeDir(ctx); err != nil {
+				return "", false
+			}
+		}
+		p = *home + p[1:]
+	}
+	if !strings.HasPrefix(p, "/") || !imageExts[strings.ToLower(path.Ext(p))] {
+		return "", false
+	}
+	return path.Clean(p), true
+}
+
+// On another machine: a regular file's mtime (seconds), a newline, and at
+// most $2 of its bytes.
+const imageScript = `[ -f "$1" ] && [ ! -L "$1" ] || { echo "not a regular file" >&2; exit 3; }
+m=$(stat -c %Y -- "$1" 2>/dev/null || stat -f %m -- "$1" 2>/dev/null || echo 0)
+printf '%s\n' "$m"; head -c "$2" "$1"`
+
 // bytes: the picture's bytes; a file is read again, if it is still the
 // same regular file (not swapped for a link, not rewritten).
 func (img *chatImage) bytes() ([]byte, error) {
 	if img.path == "" {
 		return img.data, nil
+	}
+	if img.host.remote() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		out, err := img.host.run(ctx, "", "sh", "-c", imageScript, "sh", img.path, strconv.Itoa(remoteImageMax+1))
+		if err != nil {
+			return nil, err
+		}
+		line, data, _ := bytes.Cut(out, []byte{'\n'})
+		sec, _ := strconv.ParseInt(string(line), 10, 64)
+		if int64(len(data)) != img.size || (sec > 0 && !img.mtime.IsZero() && sec != img.mtime.Unix()) || imageType(data) == "" {
+			return nil, errors.New("the file changed")
+		}
+		return data, nil
 	}
 	f, err := os.OpenFile(img.path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
@@ -268,6 +419,11 @@ var (
 // those are the pictures and every "[Image #n…]" goes; without, the paths in
 // the text that are pictures on this Mac are.
 func userImagesIn(text string, blockIDs []string) (string, []string) {
+	return userImagesWith(text, blockIDs, images.addFile)
+}
+
+// userImagesWith: userImagesIn, with the pictures at paths found by files.
+func userImagesWith(text string, blockIDs []string, files func(string) string) (string, []string) {
 	ids := append([]string(nil), blockIDs...)
 	if len(ids) > 0 {
 		text = imageMarkRe.ReplaceAllString(text, "")
@@ -277,7 +433,7 @@ func userImagesIn(text string, blockIDs []string) (string, []string) {
 			if sub[1] == "" {
 				return m
 			}
-			if id := images.addFile(strings.TrimSpace(sub[1])); id != "" {
+			if id := files(strings.TrimSpace(sub[1])); id != "" {
 				ids = append(ids, id)
 				return ""
 			}
@@ -293,7 +449,7 @@ func userImagesIn(text string, blockIDs []string) (string, []string) {
 			if j < len(text) && !strings.ContainsRune(" \t\n)>\"'`],.;:!?", rune(text[j])) {
 				continue
 			}
-			if id := images.addFile(text[i:j]); id != "" {
+			if id := files(text[i:j]); id != "" {
 				ids = append(ids, id)
 				b.WriteString(text[at:i])
 				at = j
@@ -357,6 +513,9 @@ func (s *server) image(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		data = full
+		if img.path != "" {
+			mime = imageType(full) // a file's own bytes say
+		}
 		if width > 0 {
 			if t, ok := makeThumb(full, width); ok {
 				mime, data = t.mime, t.data

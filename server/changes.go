@@ -16,9 +16,11 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -64,7 +66,11 @@ func (s *server) changes(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
-	res := gitChanges(ctx, fg.Cwd)
+	res, err := gitChangesOn(ctx, s.hostOf(t), fg.Cwd)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
 	if v := r.URL.Query().Get("version"); v != "" && v == res.Version {
 		writeJSON(w, map[string]any{"same": true, "version": v})
 		return
@@ -110,7 +116,30 @@ func gitChanges(ctx context.Context, cwd string) changesResult {
 	sum.Write(status)
 	sum.Write(numstat)
 	sum.Write(untracked)
+	byPath, order := changeList(status, numstat, untracked)
 
+	if len(order) > maxChangedFiles {
+		res.More = len(order) - maxChangedFiles
+		order = order[:maxChangedFiles]
+	}
+	for _, p := range order {
+		c := byPath[p]
+		switch {
+		case c.Status == "?":
+			newFilePatch(filepath.Join(root, p), c, sum)
+		case !c.Binary:
+			out, _ := git(ctx, root, "diff", "--no-color", "--no-renames", "--no-ext-diff", "-U3", base, "--", p)
+			sum.Write(out)
+			c.Patch, c.Truncated = hunks(string(out))
+		}
+		res.Files = append(res.Files, *c)
+	}
+	res.Version = hex.EncodeToString(sum.Sum(nil))[:16]
+	return res
+}
+
+// changeList: the changed files by path, in git's order, then the new ones.
+func changeList(status, numstat, untracked []byte) (map[string]*changedFile, []string) {
 	byPath := map[string]*changedFile{}
 	var order []string
 	f := strings.Split(string(status), "\x00")
@@ -144,25 +173,140 @@ func gitChanges(ctx context.Context, cwd string) changesResult {
 			order = append(order, p)
 		}
 	}
+	return byPath, order
+}
 
+// gitChangesOn: gitChanges on the terminal's machine.
+func gitChangesOn(ctx context.Context, h host, cwd string) (changesResult, error) {
+	if !h.remote() {
+		return gitChanges(ctx, cwd), nil
+	}
+	return remoteChanges(ctx, h, cwd)
+}
+
+// The repository roots of folders on other machines, for a minute: one
+// round trip less on each poll.
+var remoteRoots = struct {
+	sync.Mutex
+	m map[string]rootEntry
+}{m: map[string]rootEntry{}}
+
+type rootEntry struct {
+	at   time.Time
+	root string
+}
+
+// remoteRoot: the top of the repository cwd is in, on another machine ("": none).
+func remoteRoot(ctx context.Context, h host, cwd string) (string, error) {
+	key := h.machine + "\x00" + cwd
+	remoteRoots.Lock()
+	e, ok := remoteRoots.m[key]
+	remoteRoots.Unlock()
+	if ok && time.Since(e.at) < time.Minute {
+		return e.root, nil
+	}
+	r, err := h.exec(ctx, "", nil, "git", "-C", cwd, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return "", err // not reached: try again next time
+	}
+	root := ""
+	if r.code == 0 {
+		root = strings.TrimSpace(string(r.stdout))
+	}
+	remoteRoots.Lock()
+	if len(remoteRoots.m) > 256 {
+		clear(remoteRoots.m)
+	}
+	remoteRoots.m[key] = rootEntry{time.Now(), root}
+	remoteRoots.Unlock()
+	return root, nil
+}
+
+// remoteChanges is gitChanges on another machine, in few round trips: the
+// root (kept a minute), then status, counts and new files in one batch, then
+// every patch and new file's text in another. An error: the machine
+// couldn't be asked.
+func remoteChanges(ctx context.Context, h host, cwd string) (changesResult, error) {
+	res := changesResult{Cwd: cwd, Files: []changedFile{}}
+	if cwd == "" {
+		return res, nil
+	}
+	root, err := remoteRoot(ctx, h, cwd)
+	if err != nil || root == "" {
+		return res, err
+	}
+	g := func(args ...string) []string { return append([]string{"git", "-C", root}, args...) }
+	out, err := h.batch(ctx, "", [][]string{
+		g("rev-parse", "--verify", "-q", "HEAD"),
+		g("rev-parse", "--abbrev-ref", "HEAD"),
+		g("diff", "--name-status", "--no-renames", "-z", "HEAD"),
+		g("diff", "--numstat", "--no-renames", "-z", "HEAD"),
+		g("ls-files", "--others", "--exclude-standard", "-z"),
+	})
+	if err != nil {
+		return res, err
+	}
+	base, status, numstat, untracked := "HEAD", out[2].out, out[3].out, out[4].out
+	if !out[0].ok {
+		// No commit yet: a repository only if it tracks something.
+		more, err := h.batch(ctx, "", [][]string{
+			g("ls-files", "--cached"),
+			g("diff", "--name-status", "--no-renames", "-z", emptyTree),
+			g("diff", "--numstat", "--no-renames", "-z", emptyTree),
+		})
+		if err != nil || len(bytes.TrimSpace(more[0].out)) == 0 {
+			return res, err
+		}
+		base, status, numstat = emptyTree, more[1].out, more[2].out
+	}
+	res.Repo, res.Root = true, root
+	if out[1].ok {
+		res.Branch = strings.TrimSpace(string(out[1].out))
+	}
+	sum := sha1.New()
+	sum.Write(status)
+	sum.Write(numstat)
+	sum.Write(untracked)
+	byPath, order := changeList(status, numstat, untracked)
 	if len(order) > maxChangedFiles {
 		res.More = len(order) - maxChangedFiles
 		order = order[:maxChangedFiles]
 	}
+	var steps [][]string
+	stepOf := map[string]int{}
 	for _, p := range order {
 		c := byPath[p]
 		switch {
 		case c.Status == "?":
-			newFilePatch(filepath.Join(root, p), c, sum)
+			stepOf[p] = len(steps)
+			steps = append(steps, []string{"head", "-c", strconv.Itoa(maxNewFileBytes + 1), path.Join(root, p)})
 		case !c.Binary:
-			out, _ := git(ctx, root, "diff", "--no-color", "--no-renames", "--no-ext-diff", "-U3", base, "--", p)
-			sum.Write(out)
-			c.Patch, c.Truncated = hunks(string(out))
+			stepOf[p] = len(steps)
+			steps = append(steps, g("diff", "--no-color", "--no-renames", "--no-ext-diff", "-U3", base, "--", p))
+		}
+	}
+	got, err := h.batch(ctx, "", steps)
+	if err != nil {
+		return res, err
+	}
+	for _, p := range order {
+		c := byPath[p]
+		if i, ok := stepOf[p]; ok {
+			switch {
+			case c.Status != "?":
+				sum.Write(got[i].out)
+				c.Patch, c.Truncated = hunks(string(got[i].out))
+			case !got[i].ok: // gone, or a folder
+			case len(got[i].out) > maxNewFileBytes:
+				c.Truncated = true
+			default:
+				newFileText(got[i].out, c, sum)
+			}
 		}
 		res.Files = append(res.Files, *c)
 	}
 	res.Version = hex.EncodeToString(sum.Sum(nil))[:16]
-	return res
+	return res, nil
 }
 
 // hunks keeps a patch from its first hunk on (the headers say nothing a
@@ -194,6 +338,11 @@ func newFilePatch(path string, c *changedFile, sum interface{ Write([]byte) (int
 	if err != nil {
 		return
 	}
+	newFileText(b, c, sum)
+}
+
+// newFileText: a new file's bytes as all added lines.
+func newFileText(b []byte, c *changedFile, sum interface{ Write([]byte) (int, error) }) {
 	sum.Write(b) // a new file changing changes the version too
 	if bytes.IndexByte(b, 0) >= 0 {
 		c.Binary = true

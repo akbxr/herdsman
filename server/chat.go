@@ -23,14 +23,16 @@ package main
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"hash/fnv"
-	"io"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -74,10 +76,11 @@ const (
 	chatAllItems = 20000     // the most it may ask for: the whole conversation, for search
 )
 
-// The items a read gave, for one transcript and limit, until the file changes.
+// The items a read gave, for one transcript (on one machine) and limit,
+// until the file changes.
 type chatKey struct {
-	path  string
-	limit int
+	machine, path string
+	limit         int
 }
 
 type chatCacheEntry struct {
@@ -104,10 +107,14 @@ func chatLimit(r *http.Request) int {
 // cachedChat: the items of the last read, if the file hasn't changed since
 // and the images they name can still be served.
 func cachedChat(path string, limit int, st os.FileInfo) (chatCacheEntry, bool) {
+	return cachedChatOn("", path, limit, st.Size(), st.ModTime())
+}
+
+func cachedChatOn(machine, path string, limit int, size int64, mtime time.Time) (chatCacheEntry, bool) {
 	chatCache.Lock()
-	c, ok := chatCache.m[chatKey{path, limit}]
+	c, ok := chatCache.m[chatKey{machine, path, limit}]
 	chatCache.Unlock()
-	if !ok || c.size != st.Size() || !c.mtime.Equal(st.ModTime()) {
+	if !ok || c.size != size || !c.mtime.Equal(mtime) {
 		return c, false
 	}
 	for _, it := range c.items {
@@ -137,7 +144,8 @@ func (s *server) chat(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
-	agent, path := findTranscript(fg)
+	h := s.hostOf(t)
+	agent, path := s.findTranscriptOn(r.Context(), h, fg)
 	res := chatResult{Agent: agent, Source: path, Items: []ChatItem{}, Limit: limit, Start: true}
 	if s.events != nil {
 		s.events.mu.Lock()
@@ -149,20 +157,26 @@ func (s *server) chat(w http.ResponseWriter, r *http.Request) {
 	// The screen: the model and level tego and Claude Code show.
 	if agent == "tego" || agent == "claude" {
 		if screen, err := s.screenText(r.Context(), t); err == nil {
-			res.Current = s.current(agent, fg.Argv, screen, path)
+			if h.remote() {
+				res.Current = screenCurrent(agent, screen) // its settings are on that machine
+			} else {
+				res.Current = s.current(agent, fg.Argv, screen, path)
+			}
 		}
 	}
 	if path != "" {
-		st, err := os.Stat(path)
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+		size, mtime, err := h.statFile(ctx, path)
 		if err == nil {
-			res.Version = fmt.Sprintf("%d-%d-%d", st.Size(), st.ModTime().UnixNano(), limit)
-			if c, ok := cachedChat(path, limit, st); ok && r.URL.Query().Get("version") == res.Version {
+			res.Version = fmt.Sprintf("%d-%d-%d", size, mtime.UnixNano(), limit)
+			if c, ok := cachedChatOn(h.machine, path, limit, size, mtime); ok && r.URL.Query().Get("version") == res.Version {
 				writeJSON(w, map[string]any{"agent": agent, "source": path, "version": res.Version, "same": true,
 					"status": res.Status, "start": c.start, "limit": limit,
 					"model": res.Model, "modelLabel": res.ModelLabel, "thinking": res.Thinking})
 				return
 			}
-			res.Items, res.Start, err = readChat(agent, path, st, limit)
+			res.Items, res.Start, err = readChatOn(ctx, h, agent, path, size, mtime, limit)
 			if err != nil {
 				writeErr(w, http.StatusInternalServerError, err)
 				return
@@ -243,6 +257,149 @@ func findTranscript(fg foregroundInfo) (agent, path string) {
 	return agent, ""
 }
 
+// findTranscriptOn: findTranscript on the terminal's machine (a remote
+// foreground pid is a pid there).
+func (s *server) findTranscriptOn(ctx context.Context, h host, fg foregroundInfo) (agent, path string) {
+	if !h.remote() {
+		return findTranscript(fg)
+	}
+	agent = agentOf(fg)
+	if agent == "" || fg.Pid <= 0 {
+		return agent, ""
+	}
+	key := fmt.Sprintf("%s\x00%d\x00%s", h.machine, fg.Pid, agent)
+	remoteTranscripts.Lock()
+	e, ok := remoteTranscripts.m[key]
+	remoteTranscripts.Unlock()
+	if ok && time.Since(e.at) < remoteTranscriptTTL {
+		return agent, e.path
+	}
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	home, err := h.homeDir(ctx)
+	if err != nil {
+		return agent, ""
+	}
+	path, err = locateTranscript(ctx, h, agent, home, fg.Pid)
+	if err != nil {
+		return agent, "" // not kept: asked again next time
+	}
+	remoteTranscripts.Lock()
+	if len(remoteTranscripts.m) > 256 {
+		clear(remoteTranscripts.m)
+	}
+	remoteTranscripts.m[key] = transcriptEntry{time.Now(), path}
+	remoteTranscripts.Unlock()
+	return agent, path
+}
+
+// Where the agents on other machines write, by machine, pid and agent: kept
+// a little while (a round trip saved on each poll), short enough to follow a
+// new session in the same process (/clear, /new).
+const remoteTranscriptTTL = 10 * time.Second
+
+var remoteTranscripts = struct {
+	sync.Mutex
+	m map[string]transcriptEntry
+}{m: map[string]transcriptEntry{}}
+
+type transcriptEntry struct {
+	at   time.Time
+	path string
+}
+
+// On another machine (macOS or Linux) in one round trip: the process tree
+// under $1 (BFS, at most 64), Claude Code's per-process files for those
+// pids (with $2 = claude; $3 the home), and the .jsonl files they hold open:
+// lsof where there is one, else /proc. Lines: "T pids…", "S<pid> <json>",
+// "n<path>".
+const locateScript = `tree=$(ps -A -o pid=,ppid= 2>/dev/null | awk -v root="$1" '
+{ kids[$2] = kids[$2] " " $1 }
+END {
+  out = root; q = root; n = 1
+  while (q != "" && n < 64) {
+    k = split(q, a, " "); q = ""
+    for (i = 1; i <= k; i++) if (a[i] in kids) {
+      m = split(kids[a[i]], b, " ")
+      for (j = 1; j <= m && n < 64; j++) { out = out " " b[j]; q = q " " b[j]; n++ }
+    }
+  }
+  print out
+}')
+[ -n "$tree" ] || tree=$1
+echo "T $tree"
+if [ "$2" = claude ]; then
+  for p in $tree; do
+    f="$3/.claude/sessions/$p.json"
+    [ -f "$f" ] && { printf 'S%s ' "$p"; tr -d '\n' < "$f"; echo; }
+  done
+fi
+l=$(command -v lsof 2>/dev/null) || l=
+[ -z "$l" ] && [ -x /usr/sbin/lsof ] && l=/usr/sbin/lsof
+if [ -n "$l" ]; then
+  "$l" -a -p "$(echo $tree | tr ' ' ',')" -Fn 2>/dev/null | grep '^n.*\.jsonl$'
+elif [ -d /proc ]; then
+  for p in $tree; do
+    for fd in /proc/$p/fd/*; do
+      t=$(readlink "$fd" 2>/dev/null) || continue
+      case "$t" in *.jsonl) echo "n$t";; esac
+    done
+  done
+fi
+exit 0`
+
+// locateTranscript: the transcript of an agent running as pid on another
+// machine, as findTranscript finds it here ("" when it has none yet).
+func locateTranscript(ctx context.Context, h host, agent, home string, pid int) (string, error) {
+	out, err := h.run(ctx, "", "sh", "-c", locateScript, "sh", strconv.Itoa(pid), agent, home)
+	if err != nil {
+		return "", err
+	}
+	var tree []int
+	sessions := map[int][]byte{}
+	var open []string
+	for _, l := range strings.Split(string(out), "\n") {
+		switch {
+		case strings.HasPrefix(l, "T "):
+			for _, f := range strings.Fields(l[2:]) {
+				if p, err := strconv.Atoi(f); err == nil {
+					tree = append(tree, p)
+				}
+			}
+		case strings.HasPrefix(l, "S"):
+			if p, js, ok := strings.Cut(l[1:], " "); ok {
+				if n, err := strconv.Atoi(p); err == nil {
+					sessions[n] = []byte(js)
+				}
+			}
+		case strings.HasPrefix(l, "n"):
+			open = append(open, l[1:])
+		}
+	}
+	held := func(dir string) string {
+		for _, f := range open {
+			if strings.HasPrefix(f, dir+"/") && strings.HasSuffix(f, ".jsonl") {
+				return f
+			}
+		}
+		return ""
+	}
+	switch agent {
+	case "tego":
+		return held(path.Join(home, ".tego", "sessions")), nil
+	case "claude":
+		for _, p := range tree {
+			if f := claudeSessionIn(home, sessions[p]); f != "" {
+				return f, nil
+			}
+		}
+		return held(path.Join(home, ".claude", "projects")), nil
+	case "codex":
+		return held(path.Join(home, ".codex", "sessions")), nil
+	}
+	return "", nil
+}
+
 // pidTree: the process and every process under it.
 func pidTree(pid int) []int {
 	if pid <= 0 {
@@ -307,6 +464,14 @@ func claudeSession(home string, pid int) string {
 	if err != nil {
 		return ""
 	}
+	return claudeSessionIn(home, b)
+}
+
+// claudeSessionIn: the transcript a per-process file of Claude Code's names.
+func claudeSessionIn(home string, b []byte) string {
+	if len(b) == 0 {
+		return ""
+	}
 	var s struct{ SessionID, Cwd string }
 	if json.Unmarshal(b, &s) != nil || s.SessionID == "" || strings.ContainsAny(s.SessionID, "/\\") {
 		return ""
@@ -328,16 +493,21 @@ func claudeSlug(cwd string) string {
 // readChat: the last limit items of the conversation in a transcript, and
 // whether they begin it (nothing older to come).
 func readChat(agent, path string, st os.FileInfo, limit int) ([]ChatItem, bool, error) {
-	if c, ok := cachedChat(path, limit, st); ok {
+	return readChatOn(context.Background(), host{}, agent, path, st.Size(), st.ModTime(), limit)
+}
+
+// readChatOn: readChat of a transcript on a machine, of that size and mtime.
+func readChatOn(ctx context.Context, h host, agent, path string, size int64, mtime time.Time, limit int) ([]ChatItem, bool, error) {
+	if c, ok := cachedChatOn(h.machine, path, limit, size, mtime); ok {
 		return c.items, c.start, nil
 	}
 	var items []ChatItem
 	var start bool
 	var err error
 	if agent == "codex" {
-		items, start, err = readCodex(path, st.Size(), limit)
+		items, start, err = readCodex(ctx, h, path, size, limit)
 	} else {
-		items, start, err = readTree(agent, path, st.Size(), limit)
+		items, start, err = readTree(ctx, h, agent, path, size, limit)
 	}
 	if err != nil {
 		return nil, false, err
@@ -350,14 +520,14 @@ func readChat(agent, path string, st os.FileInfo, limit int) ([]ChatItem, bool, 
 	}
 	chatCache.Lock()
 	for k, c := range chatCache.m { // older reads of this file are done with
-		if k.path == path && (c.size != st.Size() || !c.mtime.Equal(st.ModTime())) {
+		if k.machine == h.machine && k.path == path && (c.size != size || !c.mtime.Equal(mtime)) {
 			delete(chatCache.m, k)
 		}
 	}
 	if len(chatCache.m) > 64 {
 		clear(chatCache.m)
 	}
-	chatCache.m[chatKey{path, limit}] = chatCacheEntry{st.Size(), st.ModTime(), items, start}
+	chatCache.m[chatKey{h.machine, path, limit}] = chatCacheEntry{size, mtime, items, start}
 	chatCache.Unlock()
 	return items, start, nil
 }
@@ -366,23 +536,25 @@ func readChat(agent, path string, st os.FileInfo, limit int) ([]ChatItem, bool, 
 // per file: a grown file has only its new lines read. The scan reaches back
 // further (and is read again from there) while the branch in play goes on
 // before it (a rewind to an old point) or it holds fewer items than asked.
-func readTree(agent, path string, size int64, limit int) ([]ChatItem, bool, error) {
-	sc := scanOf(path)
+func readTree(ctx context.Context, h host, agent, path string, size int64, limit int) ([]ChatItem, bool, error) {
+	readMax := h.chatReadMax()
+	sc := scanOf(h.machine + "\x00" + path)
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
+	sc.host, sc.files = h, images.resolver(h)
 	if sc.agent != agent || !sc.loaded || size < sc.to {
-		if err := sc.load(agent, path, size-chatTail); err != nil {
+		if err := sc.load(ctx, agent, path, size-chatTail); err != nil {
 			return nil, false, err
 		}
 	} else if size > sc.to {
-		if err := sc.extend(path); err != nil {
+		if err := sc.extend(ctx, path); err != nil {
 			return nil, false, err
 		}
 	}
 	for {
 		items, cut := sc.build()
 		read := sc.to - sc.from
-		whole, capped := sc.from == 0, read >= chatReadMax
+		whole, capped := sc.from == 0, read >= readMax
 		if whole || capped || (!cut && len(items) >= limit) {
 			return items, len(items) <= limit && (whole || capped), nil
 		}
@@ -392,22 +564,36 @@ func readTree(agent, path string, size int64, limit int) ([]ChatItem, bool, erro
 		if !cut && len(items) > 0 {
 			next = max(next, read/int64(len(items))*int64(limit)*5/4)
 		}
-		if err := sc.load(agent, path, sc.to-min(next, chatReadMax)); err != nil {
+		if err := sc.load(ctx, agent, path, sc.to-min(next, readMax)); err != nil {
 			return nil, false, err
 		}
 	}
 }
 
+// The most read of a transcript on another machine (a round trip per 6 MB).
+const chatRemoteReadMax = 4 * remoteReadMax
+
+func (h host) chatReadMax() int64 {
+	if h.remote() {
+		return chatRemoteReadMax
+	}
+	return chatReadMax
+}
+
 // readCodex: Codex's rollouts are a plain list; the tail is read again,
 // further back while it holds fewer items than asked.
-func readCodex(path string, size int64, limit int) ([]ChatItem, bool, error) {
-	for n := int64(chatTail); ; n = min(n*2, chatReadMax) {
-		lines, err := tailLines(path, n)
+func readCodex(ctx context.Context, h host, path string, size int64, limit int) ([]ChatItem, bool, error) {
+	readMax := int64(chatReadMax)
+	if h.remote() {
+		readMax = remoteReadMax // one round trip
+	}
+	for n := min(int64(chatTail), readMax); ; n = min(n*2, readMax) {
+		lines, err := tailLinesOn(ctx, h, path, n)
 		if err != nil {
 			return nil, false, err
 		}
-		items := parseCodex(lines)
-		whole, capped := n >= size, n >= chatReadMax
+		items := parseCodexWith(lines, images.resolver(h)) // (it names no pictures by path)
+		whole, capped := n >= size, n >= readMax
 		if whole || capped || len(items) >= limit {
 			return items, len(items) <= limit && (whole || capped), nil
 		}
@@ -448,26 +634,19 @@ func scanOf(path string) *treeScan {
 // newline: a line cut by from is dropped, as is a last line still being
 // written. first: where the first line returned starts; end: after the last.
 func readLines(path string, from int64) (lines [][]byte, first, end int64, err error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, 0, 0, err
-	}
-	defer f.Close()
-	st, err := f.Stat()
-	if err != nil {
-		return nil, 0, 0, err
-	}
+	return readLinesOn(context.Background(), host{}, path, from)
+}
+
+func readLinesOn(ctx context.Context, h host, path string, from int64) (lines [][]byte, first, end int64, err error) {
 	from = max(from, 0)
 	at := max(from-1, 0) // one byte before: is from the start of a line?
-	if at >= st.Size() {
-		return nil, from, from, nil
-	}
-	buf := make([]byte, st.Size()-at)
-	n, err := f.ReadAt(buf, at)
-	if err != nil && err != io.EOF {
+	buf, size, err := h.readAll(ctx, path, at, math.MaxInt64)
+	if err != nil {
 		return nil, 0, 0, err
 	}
-	buf = buf[:n]
+	if at >= size {
+		return nil, from, from, nil
+	}
 	first = at
 	if from > 0 {
 		i := bytes.IndexByte(buf, '\n')
@@ -491,26 +670,15 @@ func readLines(path string, from int64) (lines [][]byte, first, end int64, err e
 
 // tailLines returns the whole lines in the last n bytes of a file.
 func tailLines(path string, n int64) ([][]byte, error) {
-	f, err := os.Open(path)
+	return tailLinesOn(context.Background(), host{}, path, n)
+}
+
+func tailLinesOn(ctx context.Context, h host, path string, n int64) ([][]byte, error) {
+	buf, size, err := h.readFrom(ctx, path, -n, n)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
-	st, err := f.Stat()
-	if err != nil {
-		return nil, err
-	}
-	start := st.Size() - n
-	if start < 0 {
-		start = 0
-	}
-	buf := make([]byte, st.Size()-start)
-	if _, err := f.ReadAt(buf, start); err != nil && len(buf) > 0 {
-		if _, err2 := f.Seek(0, 0); err2 != nil {
-			return nil, err
-		}
-	}
-	if start > 0 { // the first line is cut: drop it
+	if start := size - int64(len(buf)); start > 0 { // the first line is cut: drop it
 		if i := bytes.IndexByte(buf, '\n'); i >= 0 {
 			buf = buf[i+1:]
 		}
@@ -602,7 +770,9 @@ const chatDeadBranch = 16
 // at from to the end of the line before to. A grown file adds its new lines.
 type treeScan struct {
 	mu       sync.Mutex
-	used     time.Time // for dropping the least recently used
+	host     host                // the machine the transcript is on
+	files    func(string) string // the id of a picture a message names (chatimage.go)
+	used     time.Time           // for dropping the least recently used
 	loaded   bool
 	agent    string
 	from, to int64
@@ -616,11 +786,14 @@ func newTreeScan(agent string) *treeScan {
 }
 
 // load reads the transcript afresh from offset from (a line cut there is dropped).
-func (sc *treeScan) load(agent, path string, from int64) error {
-	lines, first, end, err := readLines(path, from)
+func (sc *treeScan) load(ctx context.Context, agent, path string, from int64) error {
+	lines, first, end, err := readLinesOn(ctx, sc.host, path, from)
 	if err != nil {
 		sc.loaded = false
 		return err
+	}
+	if sc.host.remote() {
+		images.prefetch(ctx, sc.host, lines)
 	}
 	fresh := newTreeScan(agent)
 	fresh.add(lines)
@@ -631,10 +804,13 @@ func (sc *treeScan) load(agent, path string, from int64) error {
 }
 
 // extend reads the lines written since.
-func (sc *treeScan) extend(path string) error {
-	lines, _, end, err := readLines(path, sc.to)
+func (sc *treeScan) extend(ctx context.Context, path string) error {
+	lines, _, end, err := readLinesOn(ctx, sc.host, path, sc.to)
 	if err != nil {
 		return err
+	}
+	if sc.host.remote() {
+		images.prefetch(ctx, sc.host, lines)
 	}
 	sc.add(lines)
 	sc.to = max(sc.to, end)
@@ -753,6 +929,9 @@ func (sc *treeScan) build() (items []ChatItem, cut bool) {
 	}
 
 	b := newChatBuilder()
+	if sc.files != nil {
+		b.files = sc.files
+	}
 	for _, e := range order { // the file's order: a parent before its children
 		if !on[e.id] {
 			continue
@@ -823,6 +1002,7 @@ func parallelResults(order []*treeEntry, entries map[string]*treeEntry, on map[s
 }
 
 type chatBuilder struct {
+	files func(string) string // the id of a picture a message names by its path; "" when it isn't one
 	items []ChatItem
 	byID  map[string][2]int // tool calls waiting for their result: item, tool
 	cur   string            // the entry being read: the id of the items it starts
@@ -830,7 +1010,7 @@ type chatBuilder struct {
 }
 
 func newChatBuilder() *chatBuilder {
-	return &chatBuilder{byID: map[string][2]int{}, seq: map[string]int{}}
+	return &chatBuilder{files: images.addFile, byID: map[string][2]int{}, seq: map[string]int{}}
 }
 
 // call adds a tool call and remembers where it went, for its result.
@@ -907,7 +1087,7 @@ func (b *chatBuilder) message(role string, blocks []block) {
 	if len(userText) == 0 && len(userImages) == 0 {
 		return
 	}
-	text, pics := userImagesIn(strings.Join(userText, "\n\n"), userImages)
+	text, pics := userImagesWith(strings.Join(userText, "\n\n"), userImages, b.files)
 	if text != "" || len(pics) > 0 {
 		b.add(ChatItem{Kind: "user", Text: text, Images: pics})
 	}
@@ -988,8 +1168,12 @@ func firstLines(s string, n, max int) string {
 }
 
 // parseCodex reads a Codex rollout: messages, function calls and their output.
-func parseCodex(lines [][]byte) []ChatItem {
+func parseCodex(lines [][]byte) []ChatItem { return parseCodexWith(lines, images.addFile) }
+
+// parseCodexWith: parseCodex, with pictures named by path found by files.
+func parseCodexWith(lines [][]byte, files func(string) string) []ChatItem {
 	b := newChatBuilder()
+	b.files = files
 	seen := map[string]int{}
 	for _, l := range lines {
 		// Codex's lines have no ids: an item's is a hash of the line it starts at.

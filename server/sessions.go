@@ -530,6 +530,9 @@ func (s *server) resumeAgent(kind string) *AgentInfo {
 	return nil
 }
 
+// What /api/sessions says for another machine.
+const remoteSessionsNote = "Earlier sessions are listed for this Mac only."
+
 // runningSessions: the transcripts open in live terminals now, by file, and
 // the terminal of each.
 func (s *server) runningSessions(ctx context.Context) map[fileID]string {
@@ -561,6 +564,9 @@ func (s *server) runningSessions(ctx context.Context) map[fileID]string {
 		if (t.State != "" && t.State != "live") || !validTerminal(t.Address) {
 			continue
 		}
+		if m, _ := splitTerminal(t.Address); m != "" {
+			continue // on another machine: its files aren't this Mac's
+		}
 		wg.Add(1)
 		go func(addr string) {
 			defer wg.Done()
@@ -585,6 +591,21 @@ func (s *server) runningSessions(ctx context.Context) map[fileID]string {
 // home: the Mac user's home, for showing paths as ~.
 func (s *server) sessions(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
+	if m := q.Get("machine"); m != "" {
+		if !validMachine(m) {
+			writeErr(w, http.StatusBadRequest, errors.New("bad machine name"))
+			return
+		}
+		// Reading many transcripts there would take a round trip each.
+		reply := map[string]any{"sessions": []Session{}, "partial": false, "note": remoteSessionsNote}
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+		if home, err := s.on(m).homeDir(ctx); err == nil {
+			reply["home"] = home
+		}
+		writeJSON(w, reply)
+		return
+	}
 	cwd := q.Get("cwd")
 	if cwd != "" {
 		cwd = filepath.Clean(cwd)
@@ -707,9 +728,14 @@ func (s *server) resume(w http.ResponseWriter, r *http.Request) {
 		ID       string `json:"id"`
 		Model    string `json:"model"`
 		Thinking string `json:"thinking"`
+		Machine  string `json:"machine"`
 	}
 	if err := decode(r, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, errors.New("need {agent, id}"))
+		return
+	}
+	if req.Machine != "" {
+		writeErr(w, http.StatusBadRequest, errors.New("Earlier sessions are resumed on this Mac only."))
 		return
 	}
 	if req.Agent != "tego" && req.Agent != "claude" {
