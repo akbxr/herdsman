@@ -197,6 +197,7 @@ fun HerdScreen(
     problem: String?,
     onOpen: (Agent) -> Unit,
     onPairAgain: () -> Unit,
+    problemAction: Pair<String, () -> Unit>? = null,  // e.g. Open Tailscale
     onNewTab: () -> Unit = {},
     onActions: (Agent) -> Unit = {},  // long press: split, zoom, rename, close
     notifications: @Composable () -> Unit = {},
@@ -241,7 +242,7 @@ fun HerdScreen(
                 Text(headline, style = Type.headline, color = if (needs > 0) Ink.yellow else Ink.text)
                 if (problem != null) {
                     Spacer(Modifier.height(14.dp))
-                    Notice(problem, Modifier.padding(end = 12.dp))
+                    Notice(problem, Modifier.padding(end = 12.dp), action = problemAction)
                 }
                 Spacer(Modifier.height(14.dp))
             }

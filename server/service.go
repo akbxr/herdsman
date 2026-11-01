@@ -144,7 +144,7 @@ func launchctl(args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), err
 }
 
-func install(flagAddr, token, tokenFile string) error {
+func install(flagAddr, token, tokenFile string, awake bool) error {
 	bin := installedBinary()
 	if err := copyBinary(bin); err != nil {
 		return fmt.Errorf("copy to %s: %w", bin, err)
@@ -155,6 +155,9 @@ func install(flagAddr, token, tokenFile string) error {
 	}
 	if tokenFile != defaultTokenFile() {
 		args = append(args, "-token-file", tokenFile)
+	}
+	if !awake {
+		args = append(args, "-awake=false")
 	}
 	if err := os.MkdirAll(filepath.Dir(plistPath()), 0o755); err != nil {
 		return err
@@ -221,12 +224,18 @@ func status(flagAddr, token string) error {
 		return nil
 	}
 	defer resp.Body.Close()
-	var ping struct{ Version string }
+	var ping struct {
+		Version string
+		Awake   bool
+	}
 	json.NewDecoder(resp.Body).Decode(&ping)
 	if resp.StatusCode != 200 {
 		fmt.Printf("Address http://%s: answers, but refused this token (%d).\n", addr, resp.StatusCode)
 		return nil
 	}
 	fmt.Printf("Address http://%s: answering (version %s). Pair a phone: herdr-remote pair\n", addr, ping.Version)
+	if ping.Awake {
+		fmt.Println("Keeping the Mac awake: an agent is working or waiting (or was, minutes ago).")
+	}
 	return nil
 }

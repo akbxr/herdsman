@@ -78,16 +78,20 @@ private fun App(link: String?, onLinkUsed: () -> Unit, openFromNotification: Str
     var herd by remember { mutableStateOf<Herd?>(null) }
     var problem by remember { mutableStateOf<String?>(null) }
     val onScreen = rememberOnScreen()
-    LaunchedEffect(api, onScreen) {
+    // A network change (Tailscale back on, Wi-Fi back) asks again at once.
+    val net by rememberLink()
+    LaunchedEffect(api, onScreen, net) {
         val a = api ?: return@LaunchedEffect
         if (!onScreen) return@LaunchedEffect
         while (true) {
             runCatching { a.herd() }
                 .onSuccess { herd = it; problem = null }
-                .onFailure { problem = it.advice() }
+                .onFailure { problem = it.advice(net) }
             delay(2000)
         }
     }
+    val problemAction = ("Open Tailscale" to { Net.openTailscale(context); Unit })
+        .takeIf { problem != null && net == Link.NoVpn && Net.hasTailscale(context) }
 
     Box(Modifier.fillMaxSize().background(Ink.night).safeDrawingPadding().imePadding()) {
         val a = api
@@ -138,6 +142,7 @@ private fun App(link: String?, onLinkUsed: () -> Unit, openFromNotification: Str
                         host = host,
                         herd = herd,
                         problem = problem,
+                        problemAction = problemAction,
                         onOpen = { openTerminal = it.terminal },
                         onPairAgain = { Watch.stop(context); pairing.forget(); notify = false; api = null; herd = null },
                         onNewTab = { newTab = true },

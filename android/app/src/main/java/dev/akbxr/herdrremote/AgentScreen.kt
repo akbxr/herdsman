@@ -119,6 +119,9 @@ fun AgentScreen(api: Api, terminal: String, agent: Agent?, appScope: CoroutineSc
         else controller.web.evaluateJavascript("hr.close()", null)
     }
     DisposableEffect(controller) { onDispose { controller.close() } }
+    // Wi-Fi or Tailscale back: reconnect now, not at the next try.
+    val link by rememberLink()
+    LaunchedEffect(controller, link) { if (link == Link.Up) controller.retryNow() }
     // The keyboard covering the screen (for the terminal's own keys or the
     // message box): the terminal keeps its rows and scrolls instead.
     val keyboardUp = WindowInsets.isImeVisible
@@ -180,6 +183,8 @@ fun AgentScreen(api: Api, terminal: String, agent: Agent?, appScope: CoroutineSc
     }
 
     AgentContent(
+        link = link,
+        onOpenTailscale = { Net.openTailscale(context); Unit }.takeIf { Net.hasTailscale(context) },
         terminal = terminal, agent = agent, status = status, ctrl = ctrl, problem = problem,
         message = message, onMessage = { message = it; refused = false },
         attachments = attachments, sending = sending, refused = refused,
@@ -253,6 +258,8 @@ private fun humanSize(bytes: Long): String = when {
 /** The agent screen around its terminal (the slot), without the network. */
 @Composable
 fun AgentContent(
+    link: Link = Link.Up,
+    onOpenTailscale: (() -> Unit)? = null,
     terminal: String,
     agent: Agent?,
     status: TermStatus,
@@ -306,22 +313,36 @@ fun AgentContent(
                 .border(1.dp, Ink.rule, RoundedCornerShape(12.dp)),
         ) {
             terminalSlot()
-            val overlay = when (status.state) {
-                "ready", "connecting" -> "Connecting to $terminal…"
-                "reconnecting" -> "Connection lost. Reconnecting…"
-                "ended" -> status.reason?.replaceFirstChar { it.uppercase() } ?: "The program has ended."
+            val lost = status.state == "reconnecting"
+            val overlay = when {
+                status.state == "ended" -> status.reason?.replaceFirstChar { it.uppercase() } ?: "The program has ended."
+                status.state != "live" && link == Link.Offline -> "This phone is offline. It reconnects when it's back."
+                status.state != "live" && link == Link.NoVpn -> "Tailscale is off on this phone. It reconnects once it's on."
+                lost && status.attempt >= 3 -> "Your Mac isn't answering. It may be asleep. Still trying…"
+                lost -> "Connection lost. Reconnecting…"
+                status.state == "ready" || status.state == "connecting" -> "Connecting to $terminal…"
                 else -> null
             }
             overlay?.let {
-                Box(
+                Row(
                     Modifier
                         .align(Alignment.TopCenter)
-                        .padding(top = 10.dp)
+                        .padding(top = 10.dp, start = 12.dp, end = 12.dp)
                         .clip(RoundedCornerShape(10.dp))
                         .background(Ink.pen)
                         .border(1.dp, Ink.rule, RoundedCornerShape(10.dp))
                         .padding(horizontal = 12.dp, vertical = 7.dp),
-                ) { Text(it, style = Type.small, color = Ink.text) }
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(it, style = Type.small, color = Ink.text, modifier = Modifier.weight(1f, fill = false))
+                    if (link == Link.NoVpn && status.state != "live" && onOpenTailscale != null) {
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            "Open Tailscale", style = Type.label, color = Ink.text,
+                            modifier = Modifier.clip(RoundedCornerShape(6.dp)).clickable(onClick = onOpenTailscale).padding(4.dp),
+                        )
+                    }
+                }
             }
         }
 

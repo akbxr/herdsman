@@ -72,8 +72,8 @@ class ScreensSnapshotTest {
         Frame {
             HerdScreen(
                 "AKBARs-MacBook-Air.local", herd,
-                problem = "Can't reach your Mac. Check that herdr-remote is running and Tailscale is on.",
-                onOpen = {}, onPairAgain = {},
+                problem = "Tailscale is off on this phone. Turn it on to reach your Mac.",
+                onOpen = {}, onPairAgain = {}, problemAction = "Open Tailscale" to {},
             )
         }
     }
@@ -86,8 +86,9 @@ class ScreensSnapshotTest {
     }
 
     @Composable
-    private fun AgentView(status: TermStatus, ctrl: Boolean, message: String = "", attachments: List<Attachment> = emptyList()) {
+    private fun AgentView(status: TermStatus, ctrl: Boolean, message: String = "", attachments: List<Attachment> = emptyList(), link: Link = Link.Up) {
         AgentContent(
+            link = link, onOpenTailscale = {},
             terminal = "t12", agent = herd.agents[0], status = status, ctrl = ctrl, problem = null,
             message = message, onMessage = {}, attachments = attachments, sending = false, refused = false,
             onBack = {}, onMore = {}, onAttach = {}, onRemove = {}, onSend = {}, onKey = {},
@@ -100,6 +101,14 @@ class ScreensSnapshotTest {
 
     @Test fun agentDriving() = paparazzi.snapshot {
         Frame { AgentView(TermStatus(state = "reconnecting", cols = 52, rows = 40, phoneCols = 52, phoneRows = 40, driving = true), ctrl = true) }
+    }
+
+    @Test fun agentNoTailscale() = paparazzi.snapshot {
+        Frame { AgentView(TermStatus(state = "reconnecting", cols = 52, rows = 40, attempt = 2), ctrl = false, link = Link.NoVpn) }
+    }
+
+    @Test fun agentMacAsleep() = paparazzi.snapshot {
+        Frame { AgentView(TermStatus(state = "reconnecting", cols = 52, rows = 40, attempt = 4), ctrl = false) }
     }
 
     @Test fun agentAttachments() = paparazzi.snapshot {

@@ -39,9 +39,10 @@ var (
 type server struct {
 	token     []byte
 	tokenFile string
-	events    *eventHub // agents' status changes, for the phone's notifications
-	herdr     string    // herdr-app binary
-	hc        string    // hc binary
+	events    *eventHub  // agents' status changes, for the phone's notifications
+	awake     *keepAwake // nil with -awake=false
+	herdr     string     // herdr-app binary
+	hc        string     // hc binary
 	shotDir   string
 }
 
@@ -69,6 +70,7 @@ func main() {
 	addr := flag.String("addr", "", "listen address (default: this Mac's Tailscale IP, port 7710)")
 	tokenFile := flag.String("token-file", defaultTokenFile(), "file holding the access token (created if missing)")
 	newToken := flag.Bool("new-token", false, "replace the token (phones paired before must pair again)")
+	awake := flag.Bool("awake", true, "keep the Mac from sleeping on its own while agents work (-awake=false to let it)")
 	flag.Usage = usage
 	flag.CommandLine.Parse(args)
 	log.SetFlags(log.LstdFlags)
@@ -87,7 +89,7 @@ func main() {
 		case "status":
 			run = func() error { return status(*addr, string(token)) }
 		case "install":
-			run = func() error { return install(*addr, string(token), *tokenFile) }
+			run = func() error { return install(*addr, string(token), *tokenFile, *awake) }
 		}
 		if err := run(); err != nil {
 			fmt.Fprintln(os.Stderr, "herdr-remote:", err)
@@ -147,9 +149,14 @@ func main() {
 	mux.HandleFunc("GET /api/attach", s.authQuery(s.attach))   // WebSocket: a live terminal
 	mux.HandleFunc("POST /api/upload", s.auth(s.upload))       // an attachment, placed beside a terminal
 	mux.HandleFunc("GET /api/events", s.auth(s.eventsHandler)) // long poll: agents' status changes
+	mux.HandleFunc("POST /api/answer", s.auth(s.answer))       // allow, deny or reply to a waiting agent
 
 	s.events = newEventHub(s.hc)
 	go s.events.run(context.Background())
+	if *awake {
+		s.awake = &keepAwake{hub: s.events, bin: "/usr/bin/caffeinate", linger: awakeLinger}
+		go s.awake.run(context.Background())
+	}
 
 	srv := &http.Server{Addr: listen, Handler: logRequests(mux), ReadHeaderTimeout: 10 * time.Second}
 	ln, err := net.Listen("tcp", listen)
@@ -345,7 +352,7 @@ func decode(r *http.Request, v any) error {
 
 func (s *server) ping(w http.ResponseWriter, r *http.Request) {
 	host, _ := os.Hostname()
-	writeJSON(w, map[string]string{"ok": "true", "version": version, "host": host})
+	writeJSON(w, map[string]any{"ok": "true", "version": version, "host": host, "awake": s.awake != nil && s.awake.on()})
 }
 
 // state is what the phone polls: the window (status) and its spaces, tabs

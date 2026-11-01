@@ -22,16 +22,28 @@
   .xterm .xterm-viewport { background: #24283b !important; overflow-y: hidden; }
   /* The phone's own keyboard comes from the app, never from xterm's textarea. */
   .xterm-helper-textarea { pointer-events: none; }
+  /* Pinching scales the drawn terminal live; the font changes when it ends. */
+  #term { will-change: transform; }
+  /* After a long press selects text: copy it, or let it go. */
+  #selbar { position: fixed; top: 10px; left: 50%; transform: translateX(-50%); display: none; gap: 2px;
+            background: #1f2335; border-radius: 12px; padding: 4px; box-shadow: 0 6px 20px rgba(0,0,0,.45);
+            font: 600 14px/1 system-ui, sans-serif; z-index: 2; }
+  #selbar.on { display: flex; }
+  #selbar button { all: unset; color: #c0caf5; padding: 12px 16px; border-radius: 8px; min-width: 44px; text-align: center; }
+  #selbar button:active { background: #2e3c64; }
+  #selbar .muted { color: #737aa2; }
 </style>
 </head>
 <body>
 <div id="wrap"><div id="term"></div></div>
+<div id="selbar"><button id="sel-copy">Copy</button><button id="sel-all">Select all</button><button id="sel-x" class="muted" aria-label="Clear selection">✕</button></div>
 <script src="xterm.js"></script>
 <script src="addon-webgl.js"></script>
 <script>
 (() => {
   const BASE = 13, MIN = 5.5;            // font px: readable, and the smallest when fitting
-  const android = window.Android || { onStatus() {}, onTap() {} };
+  const ZMIN = 7, ZMAX = 24;             // what a pinch can choose
+  const android = Object.assign({ onStatus() {}, onTap() {}, onZoom() {}, copy() {}, haptic() {} }, window.Android || {});
   const wrap = document.getElementById("wrap");
   const term = new Terminal({
     fontFamily: "JBM, NerdSymbols, monospace", fontSize: BASE, lineHeight: 1.0, scrollback: 1000,
@@ -56,9 +68,10 @@
   term.textarea.setAttribute("inputmode", "none");   // no soft keyboard from the web side
   term.textarea.setAttribute("tabindex", "-1");
 
-  let ws = null, url = null, ended = false, retry = 0;
+  let ws = null, url = null, ended = false, retry = 0, retryTimer = 0;
   let real = { cols: term.cols, rows: term.rows };   // the core terminal's size
-  let phone = { cols: 0, rows: 0 };                  // what fits this screen at BASE
+  let phone = { cols: 0, rows: 0 };                  // what fits this screen at the font
+  let zoom = null;   // the font a pinch chose (remembered per terminal by the app); null: BASE, shrunk to fit
   const enc = new TextEncoder();
 
   function status(state, extra) { android.onStatus(JSON.stringify(Object.assign({ state }, extra || {}))); }
@@ -79,11 +92,12 @@
 
   function view() { return { w: wrap.clientWidth - 12, h: wrap.clientHeight - 6 }; }
 
-  // Shrinks the font until the real terminal's width fits the phone.
+  // Shrinks the font until the real terminal's width fits the phone. A font
+  // you pinched to stays as it is: a wider terminal then pans sideways.
   function fit() {
     const v = view(), c = cellAt(BASE);
     if (!c.w) return;
-    const px = Math.max(MIN, Math.min(BASE, Math.floor((BASE * v.w / (real.cols * c.w)) * 2) / 2));
+    const px = zoom || Math.max(MIN, Math.min(BASE, Math.floor((BASE * v.w / (real.cols * c.w)) * 2) / 2));
     if (term.options.fontSize !== px) term.options.fontSize = px;
     const driving = Math.abs(real.cols - phone.cols) <= 1 && Math.abs(real.rows - phone.rows) <= 1;
     status("size", { cols: real.cols, rows: real.rows, phoneCols: phone.cols, phoneRows: phone.rows, driving, font: px });
@@ -105,7 +119,7 @@
     }
   }
   function measurePhone() {
-    const v = view(), c = cellAt(BASE);
+    const v = view(), c = cellAt(zoom || BASE);
     if (!c.w) return;
     const next = { cols: Math.max(20, Math.floor(v.w / c.w)), rows: Math.max(5, Math.floor(v.h / c.h)) };
     // With the keyboard up the rows stay: the terminal scrolls under it
@@ -130,16 +144,21 @@
     else if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "reply", data: d }));
   });
 
+  function dropSocket() { if (ws) { const old = ws; ws = null; old.close(); } }
+
   function connect() {
-    if (!url || ended) return;
+    clearTimeout(retryTimer);
+    if (!url || ended || ws) return;
     measurePhone();
     status("connecting");
     const u = url + "&cols=" + phone.cols + "&rows=" + phone.rows;
     sent = { cols: phone.cols, rows: phone.rows };
-    ws = new WebSocket(u);
-    ws.binaryType = "arraybuffer";
-    ws.onopen = () => { retry = 0; term.reset(); status("live"); };
-    ws.onmessage = (e) => {
+    const sock = new WebSocket(u);   // a socket replaced or closed by hand goes quiet
+    ws = sock;
+    sock.binaryType = "arraybuffer";
+    sock.onopen = () => { if (ws !== sock) return; retry = 0; term.reset(); status("live"); };
+    sock.onmessage = (e) => {
+      if (ws !== sock) return;
       if (typeof e.data !== "string") { term.write(new Uint8Array(e.data)); return; }
       const m = JSON.parse(e.data);
       if (m.type === "size") {
@@ -154,12 +173,14 @@
         if (/ended/.test(m.reason)) { ended = true; status("ended", { reason: m.reason }); }
       }
     };
-    ws.onclose = () => {
+    sock.onclose = () => {
+      if (ws !== sock) return;
       ws = null;
       if (ended) return;
-      retry = Math.min(retry + 1, 6);
-      status("reconnecting", { inMs: 500 * retry });
-      setTimeout(connect, 500 * retry);
+      retry++;
+      const wait = 500 * Math.min(retry, 6);
+      status("reconnecting", { inMs: wait, attempt: retry });
+      retryTimer = setTimeout(connect, wait);
     };
   }
 
@@ -223,21 +244,103 @@
     flingFrame = requestAnimationFrame(step);
   }
 
+  // Long press: selects the word under the finger; dragging on extends the
+  // selection, and the bar at the top copies it.
+  const termEl = document.getElementById("term");
+  const selbar = document.getElementById("selbar");
+  let pressTimer = 0, anchor = null;   // anchor: the first word, as cell indexes
+  function cellAt2(x, y) {
+    const r = term.element.querySelector(".xterm-screen").getBoundingClientRect();
+    const col = Math.max(0, Math.min(term.cols - 1, Math.floor((x - r.left) / (r.width / term.cols))));
+    const row = Math.max(0, Math.min(term.rows - 1, Math.floor((y - r.top) / (r.height / term.rows))));
+    return { col, row: row + term.buffer.active.viewportY };
+  }
+  const index = (c) => c.row * term.cols + c.col;
+  function wordAt(c) {
+    const line = term.buffer.active.getLine(c.row);
+    const word = (i) => {
+      const cell = line && line.getCell(i);
+      if (!cell) return false;
+      if (cell.getWidth() === 0) return true;   // a wide character's second half
+      return /^[^\s│┃║|"'`()\[\]{}<>,;]+$/.test(cell.getChars());   // "" is an empty cell
+    };
+    let a = c.col, b = c.col;
+    if (word(c.col)) {
+      while (a > 0 && word(a - 1)) a--;
+      while (b < term.cols - 1 && word(b + 1)) b++;
+    }
+    return { start: index({ row: c.row, col: a }), end: index({ row: c.row, col: b }) };
+  }
+  function selectRange(start, end) {
+    term.select(start % term.cols, Math.floor(start / term.cols), end - start + 1);
+  }
+  function startSelect(t) {
+    t.selecting = true;
+    anchor = wordAt(cellAt2(t.x0, t.y0));
+    selectRange(anchor.start, anchor.end);
+    selbar.classList.remove("on");
+    android.haptic();
+  }
+  function extendSelect(x, y) {
+    // Near the top or bottom edge, the text scrolls to select further.
+    const r = wrap.getBoundingClientRect();
+    if (y < r.top + 24) scrollBy(0, -rowH() / 2);
+    else if (y > r.bottom - 24) scrollBy(0, rowH() / 2);
+    const i = index(cellAt2(x, y));
+    if (i >= anchor.start) selectRange(anchor.start, Math.max(i, anchor.end));
+    else selectRange(i, anchor.end);
+  }
+  function clearSelection() { term.clearSelection(); anchor = null; selbar.classList.remove("on"); }
+  const onButton = (id, f) => document.getElementById(id).addEventListener("click", (e) => { e.stopPropagation(); f(); });
+  onButton("sel-copy", () => { const text = term.getSelection(); if (text) android.copy(text); clearSelection(); });
+  onButton("sel-all", () => { term.selectAll(); selbar.classList.add("on"); });
+  onButton("sel-x", clearSelection);
+
+  // Two fingers: pinch to make the text bigger or smaller.
+  let pinch = null;   // { d0, z0, scale }
+  const spread = (e) => Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+  function startPinch(e) {
+    const r = termEl.getBoundingClientRect();
+    const mx = (e.touches[0].clientX + e.touches[1].clientX) / 2, my = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+    termEl.style.transformOrigin = (mx - r.left) + "px " + (my - r.top) + "px";
+    pinch = { d0: spread(e) || 1, z0: term.options.fontSize, scale: 1 };
+  }
+  function movePinch(e) {
+    pinch.scale = Math.max(ZMIN / pinch.z0, Math.min(ZMAX / pinch.z0, spread(e) / pinch.d0));
+    termEl.style.transform = "scale(" + pinch.scale + ")";
+  }
+  function endPinch() {
+    const z = Math.max(ZMIN, Math.min(ZMAX, Math.round(pinch.z0 * pinch.scale * 2) / 2));
+    termEl.style.transform = "";
+    pinch = null;
+    if (Math.abs(z - term.options.fontSize) < 0.5) return;
+    hr.zoom(z);
+    android.onZoom(z);
+  }
+
   const opts = { capture: true, passive: false };
   wrap.addEventListener("touchstart", (e) => {
     e.stopPropagation();   // not to xterm
+    e.preventDefault();    // nor the mouse events a browser makes up from touches (they clear a selection)
     stopFling();           // a touch catches a flick, like any list
-    if (e.touches.length !== 1) { touch = null; return; }
+    clearTimeout(pressTimer);
+    if (e.touches.length === 2 && !(touch && touch.selecting)) { touch = null; startPinch(e); return; }
+    if (e.touches.length !== 1 || pinch) { return; }
     const t = e.touches[0];
-    touch = { x0: t.clientX, y0: t.clientY, x: t.clientX, y: t.clientY, moved: false, samples: [{ t: e.timeStamp, x: t.clientX, y: t.clientY }] };
+    touch = { x0: t.clientX, y0: t.clientY, x: t.clientX, y: t.clientY, moved: false, selecting: false, samples: [{ t: e.timeStamp, x: t.clientX, y: t.clientY }] };
+    const mine = touch;
+    pressTimer = setTimeout(() => { if (touch === mine && !mine.moved) startSelect(mine); }, 450);
   }, opts);
   wrap.addEventListener("touchmove", (e) => {
     e.stopPropagation();
+    if (pinch) { e.preventDefault(); if (e.touches.length === 2) movePinch(e); return; }
     if (!touch || e.touches.length !== 1) return;
     e.preventDefault();
     const t = e.touches[0];
+    if (touch.selecting) { extendSelect(t.clientX, t.clientY); return; }
     if (!touch.moved && Math.hypot(t.clientX - touch.x0, t.clientY - touch.y0) < 8) return;
     touch.moved = true;
+    clearTimeout(pressTimer);
     scrollBy(touch.x - t.clientX, touch.y - t.clientY);
     touch.x = t.clientX; touch.y = t.clientY;
     touch.samples.push({ t: e.timeStamp, x: t.clientX, y: t.clientY });
@@ -245,17 +348,28 @@
   }, opts);
   wrap.addEventListener("touchend", (e) => {
     e.stopPropagation();
+    e.preventDefault();
+    clearTimeout(pressTimer);
+    if (pinch) { if (e.touches.length < 2) endPinch(); return; }   // the other finger is ignored until it lifts
     if (!touch) return;
     const t = touch;
     touch = null;
-    if (!t.moved) { android.onTap(); return; }
+    if (t.selecting) { if (term.hasSelection()) selbar.classList.add("on"); return; }
+    if (!t.moved) {
+      if (term.hasSelection()) clearSelection();   // a tap lets a selection go first
+      else android.onTap();
+      return;
+    }
     // The speed over the last ~100 ms, unless the finger stopped before lifting.
     const a = t.samples[0], b = t.samples[t.samples.length - 1], dt = b.t - a.t;
     if (dt <= 0 || e.timeStamp - b.t > 80) return;
     const vx = (a.x - b.x) / dt, vy = (a.y - b.y) / dt;
     if (Math.hypot(vx, vy) > 0.25) startFling(vx, vy);
   }, opts);
-  wrap.addEventListener("touchcancel", (e) => { e.stopPropagation(); touch = null; }, opts);
+  wrap.addEventListener("touchcancel", (e) => {
+    e.stopPropagation(); clearTimeout(pressTimer); touch = null;
+    if (pinch) { termEl.style.transform = ""; pinch = null; }
+  }, opts);
 
   // Keeps the cursor's row on screen inside #wrap (the terminal can be taller
   // than the space the keyboard leaves), and the top when it all fits.
@@ -285,8 +399,11 @@
   new ResizeObserver(() => { measurePhone(); fit(); follow(); }).observe(wrap);
 
   window.hr = {
-    connect(wsUrl) {
+    // zoom: the font pinched to before, for this terminal; 0 for the default.
+    connect(wsUrl, z) {
       url = wsUrl; ended = false;
+      dropSocket();
+      zoom = z > 0 ? Math.max(ZMIN, Math.min(ZMAX, z)) : null;
       // Load the terminal's fonts first (document.fonts.ready doesn't wait for
       // a font nothing has asked for yet), make xterm measure its cells again
       // with them, then size for this phone and go.
@@ -319,7 +436,17 @@
     },
     key(name) { const k = KEYS[name]; if (k) { lastUserScroll = 0; stopFling(); term.scrollToBottom(); send(k()); follow(); } },
     paste(text) { term.paste(text); },
-    close() { ended = true; if (ws) ws.close(); },
+    // A font size; 0 back to the default. Typing here then gives the terminal
+    // what fits the phone at that size.
+    zoom(z) {
+      zoom = z > 0 ? Math.max(ZMIN, Math.min(ZMAX, z)) : null;
+      measurePhone(); fit(); follow();
+    },
+    selection() { return term.getSelection(); },
+    _t: term,   // for tests in a desktop browser
+    close() { ended = true; clearTimeout(retryTimer); dropSocket(); },
+    // The network changed (Tailscale back on): try now, not at the next retry.
+    retry() { if (!ws && url && !ended) connect(); },
   };
   status("ready");
   // Debugging in a desktop browser: terminal.html#ws=<attach URL with token>

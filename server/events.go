@@ -91,6 +91,12 @@ func (h *eventHub) seed(ctx context.Context) {
 		h.current[t.Address] = AgentEvent{Terminal: t.Address, State: st.State, Kind: st.Kind, Msg: st.Msg, App: st.App, Title: st.Title, Where: where, At: time.Now().UnixMilli()}
 		h.mu.Unlock()
 	}
+	// Followers of the current states (keeping the Mac awake) look again.
+	// Long polls wake too and find no new events: they wait again.
+	h.mu.Lock()
+	close(h.wake)
+	h.wake = make(chan struct{})
+	h.mu.Unlock()
 }
 
 type status7501 struct {

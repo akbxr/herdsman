@@ -2,6 +2,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Telling "offline" and "Tailscale is off" apart from "the Mac isn't answering" (Net.kt). -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- Notifications while the app is closed (Watch.kt): a foreground service
          that waits on the Mac, started again after a restart. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -49,6 +51,11 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Waits on the user's own Mac (over their VPN) for coding agents asking for input, to notify them; no push service is involved." />
         </service>
+
+        <!-- The buttons on an agent's notification (Answer.kt). -->
+        <receiver
+            android:name=".AnswerReceiver"
+            android:exported="false" />
 
         <receiver
             android:name=".BootReceiver"

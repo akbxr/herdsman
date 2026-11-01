@@ -135,7 +135,7 @@ fun Field(
 
 /** A problem, said as what to do. */
 @Composable
-fun Notice(text: String, modifier: Modifier = Modifier) {
+fun Notice(text: String, modifier: Modifier = Modifier, action: Pair<String, () -> Unit>? = null) {
     Row(
         modifier
             .fillMaxWidth()
@@ -146,7 +146,14 @@ fun Notice(text: String, modifier: Modifier = Modifier) {
     ) {
         Box(Modifier.padding(top = 6.dp).width(6.dp).height(6.dp).clip(RoundedCornerShape(3.dp)).background(Ink.red))
         Spacer(Modifier.width(10.dp))
-        Text(text, style = Type.small, color = Ink.text)
+        Text(text, style = Type.small, color = Ink.text, modifier = Modifier.weight(1f))
+        action?.let { (label, run) ->
+            Spacer(Modifier.width(10.dp))
+            Text(
+                label, style = Type.label, color = Ink.text,
+                modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable(onClick = run).padding(horizontal = 6.dp, vertical = 2.dp),
+            )
+        }
     }
 }
 

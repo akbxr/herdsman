@@ -29,6 +29,8 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Notifications while the app is closed: a foreground service long-polls
@@ -99,6 +101,9 @@ class WatchService : Service() {
     private var loop: Job? = null
     private val notified = mutableMapOf<String, String>()  // terminal → "state msg" last shown
     private lateinit var host: String
+    // A network change (Tailscale back on) cuts a wait between tries short.
+    private val kick = Channel<Unit>(Channel.CONFLATED)
+    private var stopWatchingNet: () -> Unit = {}
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -110,6 +115,7 @@ class WatchService : Service() {
             this, Watch.ONGOING_ID, ongoing("Watching $host"),
             if (Build.VERSION.SDK_INT >= 34) ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE else 0,
         )
+        stopWatchingNet = Net.watch(this) { kick.trySend(Unit) }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -118,6 +124,7 @@ class WatchService : Service() {
     }
 
     override fun onDestroy() {
+        stopWatchingNet()
         scope.cancel()
         super.onDestroy()
     }
@@ -147,8 +154,14 @@ class WatchService : Service() {
                     return
                 }
                 failures++
-                if (failures == 2) updateOngoing("Can't reach $host. Trying again…")
-                delay(minOf(60_000L, 2_000L * failures))
+                if (failures >= 2) updateOngoing(
+                    when (Net.link(this)) {
+                        Link.Offline -> "This phone is offline. Notifications resume when it's back."
+                        Link.NoVpn -> "Tailscale is off on this phone: no notifications until it's on."
+                        Link.Up -> "Can't reach $host. It may be asleep. Trying again…"
+                    },
+                )
+                withTimeoutOrNull(minOf(30_000L, 2_000L * failures)) { kick.receive() }
             }
         }
     }
@@ -208,6 +221,7 @@ class WatchService : Service() {
             .setContentIntent(open)
             .setAutoCancel(true)
             .setGroup("agents")
+            .apply { Answer.actions(this@WatchService, e, title).forEach(::addAction) }
             .build()
     }
 

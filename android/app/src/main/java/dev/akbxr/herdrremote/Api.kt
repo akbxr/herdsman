@@ -50,6 +50,7 @@ class ApiError(message: String) : IOException(message)
 
 /** A program's status change, in its own words (OSC 7501 via herdr-core). */
 data class AgentEvent(
+    val seq: Long,       // the server's event number; answers name it (Answer.kt)
     val terminal: String,
     val state: String,   // idle, working, blocked, done, error; "" cleared; ended
     val kind: String,    // permission, question, auth (blocked only)
@@ -59,6 +60,7 @@ data class AgentEvent(
 ) {
     companion object {
         fun from(o: JSONObject) = AgentEvent(
+            seq = o.optLong("seq"),
             terminal = o.optString("terminal"),
             state = o.optString("state"),
             kind = o.optString("kind"),
@@ -152,6 +154,11 @@ class Api(val base: String, val token: String) {
 
     suspend fun keys(terminal: String, vararg keys: String) {
         call("/api/keys", JSONObject().put("terminal", terminal).put("keys", JSONArray(keys.toList())))
+    }
+
+    /** Answers a waiting agent: allow, deny, or reply (text). seq: the event it answers. */
+    suspend fun answer(terminal: String, seq: Long, answer: String, text: String = "") {
+        call("/api/answer", JSONObject().put("terminal", terminal).put("seq", seq).put("answer", answer).put("text", text), timeoutMs = 45_000)
     }
 
     suspend fun interrupt(terminal: String) {

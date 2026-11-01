@@ -24,6 +24,7 @@ data class TermStatus(
     val phoneCols: Int = 0, val phoneRows: Int = 0,
     val driving: Boolean = false,      // the terminal has this phone's size
     val reason: String? = null,
+    val attempt: Int = 0,              // reconnecting: how many tries so far
 )
 
 /**
@@ -70,7 +71,7 @@ class TerminalController(context: Context, private val onStatus: (TermStatus) ->
                         phoneCols = o.optInt("phoneCols"), phoneRows = o.optInt("phoneRows"),
                         driving = o.optBoolean("driving"),
                     )
-                    else -> last.copy(state = o.optString("state"), reason = o.optString("reason").ifBlank { null })
+                    else -> last.copy(state = o.optString("state"), reason = o.optString("reason").ifBlank { null }, attempt = o.optInt("attempt"))
                 }
                 onStatus(last)
             }
@@ -78,7 +79,27 @@ class TerminalController(context: Context, private val onStatus: (TermStatus) ->
 
         @JavascriptInterface
         fun onTap() = main.post { showKeyboard() }
+
+        /** A pinch chose a font size: kept for this terminal. */
+        @JavascriptInterface
+        fun onZoom(px: Float) {
+            if (terminal.isNotEmpty()) zooms.edit().putFloat(terminal, px).apply()
+        }
+
+        @JavascriptInterface
+        fun copy(text: String) = main.post {
+            val cm = web.context.getSystemService(android.content.ClipboardManager::class.java)
+            cm?.setPrimaryClip(android.content.ClipData.newPlainText("Terminal", text))
+            // Android 13 and later show their own confirmation.
+            if (android.os.Build.VERSION.SDK_INT < 33) android.widget.Toast.makeText(web.context, "Copied", android.widget.Toast.LENGTH_SHORT).show()
+        }
+
+        @JavascriptInterface
+        fun haptic() = main.post { web.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS) }
     }
+
+    private var terminal = ""
+    private val zooms = context.getSharedPreferences("zoom", Context.MODE_PRIVATE)
 
     private fun js(code: String) = main.post { web.evaluateJavascript(code, null) }
 
@@ -86,13 +107,17 @@ class TerminalController(context: Context, private val onStatus: (TermStatus) ->
         val ws = api.base.trimEnd('/').replaceFirst("http", "ws") +
             "/api/attach?terminal=" + URLEncoder.encode(terminal, "UTF-8") +
             "&token=" + URLEncoder.encode(api.token, "UTF-8")
+        this.terminal = terminal
         if (pageReady) start(ws) else pendingUrl = ws
     }
 
     private fun start(ws: String) {
         pendingUrl = null
-        js("hr.connect(${JSONObject.quote(ws)})")
+        js("hr.connect(${JSONObject.quote(ws)}, ${zooms.getFloat(terminal, 0f)})")
     }
+
+    /** The network came back: reconnect now rather than at the next try. */
+    fun retryNow() = js("hr.retry()")
 
     fun type(text: String) {
         if (text.isEmpty()) return
