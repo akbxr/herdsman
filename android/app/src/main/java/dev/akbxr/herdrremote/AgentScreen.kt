@@ -173,6 +173,7 @@ fun AgentScreen(api: Api, terminal: String, agent: Agent?, appScope: CoroutineSc
 
     // Messages sent from the chat show at once, until the transcript has them.
     val pending = remember(terminal) { mutableStateListOf<Pair<String, Long>>() }
+    LaunchedEffect(chat?.source) { pending.clear() }  // another session: not its messages
     LaunchedEffect(chatItems, pending.size) {
         val recent = chatItems.takeLast(12).filter { it.kind == "user" }.map { it.text }
         val now = System.currentTimeMillis()

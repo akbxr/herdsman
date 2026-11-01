@@ -10,16 +10,16 @@ package main
 //                named in ~/.claude/sessions/<pid>.json
 //   Codex        ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl, the newest for the cwd
 //
-// A session that has said nothing yet has no transcript: then the chat is
-// empty, never an older session's from the same folder. (Where the agent
-// doesn't say which file is its own, only files written since the program
-// started count.)
+// The file is always the one that process names or holds open (it, or a
+// process it started: a wrapper script runs the real program), never "the
+// newest in that folder": two sessions in one folder would show each
+// other's chat. A session that has said nothing yet has no file: the chat is
+// empty.
 //
 // Transcripts grow to tens of MB: only the tail is read, and a parse is kept
 // until the file changes.
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -165,30 +165,57 @@ func agentOf(fg foregroundInfo) string {
 func findTranscript(fg foregroundInfo) (agent, path string) {
 	agent = agentOf(fg)
 	home, _ := os.UserHomeDir()
-	started := procStart(fg.Pid)
+	pids := pidTree(fg.Pid)
 	switch agent {
-	case "tego":
-		if p := openFile(fg.Pid, filepath.Join(home, ".tego", "sessions")); p != "" {
-			return agent, p
-		}
-		return agent, newestSince(filepath.Join(home, ".tego", "sessions", tegoSlug(fg.Cwd)), ".jsonl", started)
+	case "tego": // opens its session file when it starts
+		return agent, openFile(pids, filepath.Join(home, ".tego", "sessions"))
 	case "claude":
-		if p := claudeSession(home, fg.Pid); p != "" {
-			return agent, p
+		for _, pid := range pids {
+			if p := claudeSession(home, pid); p != "" {
+				return agent, p
+			}
 		}
-		return agent, newestSince(filepath.Join(home, ".claude", "projects", claudeSlug(fg.Cwd)), ".jsonl", started)
+		// An older Claude Code without per-process files: the file it has open, if any.
+		return agent, openFile(pids, filepath.Join(home, ".claude", "projects"))
 	case "codex":
-		return agent, newestCodex(filepath.Join(home, ".codex", "sessions"), fg.Cwd, started)
+		return agent, openFile(pids, filepath.Join(home, ".codex", "sessions"))
 	}
 	return agent, ""
 }
 
-// openFile finds a .jsonl under dir that the process has open.
-func openFile(pid int, dir string) string {
+// pidTree: the process and every process under it.
+func pidTree(pid int) []int {
 	if pid <= 0 {
+		return nil
+	}
+	out, err := exec.Command("ps", "-A", "-o", "pid=,ppid=").Output()
+	if err != nil {
+		return []int{pid}
+	}
+	children := map[int][]int{}
+	for _, l := range strings.Split(string(out), "\n") {
+		var p, pp int
+		if n, _ := fmt.Sscan(l, &p, &pp); n == 2 {
+			children[pp] = append(children[pp], p)
+		}
+	}
+	tree := []int{pid}
+	for i := 0; i < len(tree) && len(tree) < 64; i++ {
+		tree = append(tree, children[tree[i]]...)
+	}
+	return tree
+}
+
+// openFile finds a .jsonl under dir that one of the processes has open.
+func openFile(pids []int, dir string) string {
+	if len(pids) == 0 {
 		return ""
 	}
-	out, err := exec.Command("lsof", "-p", fmt.Sprint(pid), "-Fn").Output()
+	list := make([]string, len(pids))
+	for i, p := range pids {
+		list[i] = fmt.Sprint(p)
+	}
+	out, err := exec.Command("lsof", "-a", "-p", strings.Join(list, ","), "-Fn").Output()
 	if err != nil && len(out) == 0 {
 		return ""
 	}
@@ -218,66 +245,6 @@ func claudeSession(home string, pid int) string {
 	return filepath.Join(home, ".claude", "projects", claudeSlug(s.Cwd), s.SessionID+".jsonl")
 }
 
-// procStart: when a process started; zero when unknown.
-func procStart(pid int) time.Time {
-	if pid <= 0 {
-		return time.Time{}
-	}
-	out, err := exec.Command("ps", "-o", "lstart=", "-p", fmt.Sprint(pid)).Output()
-	if err != nil {
-		return time.Time{}
-	}
-	t, err := time.ParseInLocation("Mon Jan _2 15:04:05 2006", strings.TrimSpace(string(out)), time.Local)
-	if err != nil {
-		return time.Time{}
-	}
-	return t
-}
-
-// newestSince: the newest file written since the program started (a few
-// seconds' slack); with no start known, the newest.
-func newestSince(dir, ext string, started time.Time) string {
-	p := newest(dir, ext)
-	if p == "" || started.IsZero() {
-		return p
-	}
-	if st, err := os.Stat(p); err != nil || st.ModTime().Before(started.Add(-3*time.Second)) {
-		return ""
-	}
-	return p
-}
-
-func newest(dir, ext string) string {
-	ents, err := os.ReadDir(dir)
-	if err != nil {
-		return ""
-	}
-	best, bestT := "", time.Time{}
-	for _, e := range ents {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ext) {
-			continue
-		}
-		if info, err := e.Info(); err == nil && info.ModTime().After(bestT) {
-			best, bestT = filepath.Join(dir, e.Name()), info.ModTime()
-		}
-	}
-	return best
-}
-
-// tego names a cwd's session folder like this (internal/session.Dir): the
-// real path with / \ : as dashes, without dashes at the ends.
-func tegoSlug(cwd string) string {
-	if real, err := filepath.EvalSymlinks(cwd); err == nil {
-		cwd = real
-	}
-	return strings.Trim(strings.Map(func(r rune) rune {
-		if r == '/' || r == '\\' || r == ':' {
-			return '-'
-		}
-		return r
-	}, cwd), "-")
-}
-
 // Claude Code: every character but a letter or digit becomes a dash.
 func claudeSlug(cwd string) string {
 	b := []byte(cwd)
@@ -287,37 +254,6 @@ func claudeSlug(cwd string) string {
 		}
 	}
 	return string(b)
-}
-
-// The newest Codex rollout, of the last week, whose session began in cwd.
-func newestCodex(root, cwd string, started time.Time) string {
-	var files []string
-	for d := 0; d < 7; d++ {
-		day := time.Now().AddDate(0, 0, -d)
-		m, _ := filepath.Glob(filepath.Join(root, day.Format("2006/01/02"), "rollout-*.jsonl"))
-		files = append(files, m...)
-	}
-	sort.Slice(files, func(i, j int) bool { return files[i] > files[j] }) // names start with the time
-	for _, f := range files {
-		fh, err := os.Open(f)
-		if err != nil {
-			continue
-		}
-		line, _ := bufio.NewReader(fh).ReadBytes('\n')
-		fh.Close()
-		var meta struct {
-			Payload struct{ Cwd string }
-			Cwd     string
-		}
-		json.Unmarshal(line, &meta)
-		if meta.Payload.Cwd == cwd || meta.Cwd == cwd {
-			if st, err := os.Stat(f); err == nil && !started.IsZero() && st.ModTime().Before(started.Add(-3*time.Second)) {
-				return "" // the newest for this folder is older than the program: not its own
-			}
-			return f
-		}
-	}
-	return ""
 }
 
 func readChat(agent, path string, st os.FileInfo) ([]ChatItem, error) {
@@ -337,6 +273,9 @@ func readChat(agent, path string, st os.FileInfo) ([]ChatItem, error) {
 		items = parseCodex(lines)
 	default:
 		items = parseTree(agent, lines)
+	}
+	if items == nil {
+		items = []ChatItem{} // a new session: an empty list, not null
 	}
 	if len(items) > chatMaxItems {
 		items = items[len(items)-chatMaxItems:]

@@ -6,7 +6,6 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 )
 
 func lines(s string) [][]byte {
@@ -103,9 +102,6 @@ func TestSlugs(t *testing.T) {
 	if got := claudeSlug("/Users/a/my.proj_x"); got != "-Users-a-my-proj-x" {
 		t.Errorf("claude: %q", got)
 	}
-	if got := tegoSlug("/nonexistent/a/b"); got != "nonexistent-a-b" {
-		t.Errorf("tego: %q", got)
-	}
 }
 
 func TestAgentOf(t *testing.T) {
@@ -178,22 +174,5 @@ func TestClaudeSession(t *testing.T) {
 	os.WriteFile(filepath.Join(home, ".claude", "sessions", "7.json"), []byte(`{"sessionId":"../../etc/x","cwd":"/p"}`), 0o644)
 	if got := claudeSession(home, 7); got != "" {
 		t.Errorf("a path for a session id: %q", got)
-	}
-}
-
-func TestNewestSince(t *testing.T) {
-	dir := t.TempDir()
-	old := filepath.Join(dir, "old.jsonl")
-	os.WriteFile(old, []byte("{}\n"), 0o644)
-	past := time.Now().Add(-time.Hour)
-	os.Chtimes(old, past, past)
-	if got := newestSince(dir, ".jsonl", time.Now()); got != "" {
-		t.Errorf("an older session's file counted as the new program's: %q", got)
-	}
-	if got := newestSince(dir, ".jsonl", time.Time{}); got != old {
-		t.Errorf("no start known: %q", got)
-	}
-	if got := newestSince(dir, ".jsonl", past.Add(-time.Minute)); got != old {
-		t.Errorf("written since the start: %q", got)
 	}
 }
