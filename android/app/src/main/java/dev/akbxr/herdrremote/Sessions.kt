@@ -59,7 +59,8 @@ data class EarlierSession(
     val running: String? = null,
 )
 
-data class EarlierSessions(val home: String, val list: List<EarlierSession>)
+/** [note]: why there are none, from the machine (e.g. its agents keep no sessions there). */
+data class EarlierSessions(val home: String, val list: List<EarlierSession>, val note: String = "")
 
 /** When something last happened, for people: "5 min ago", "yesterday", "12 Oct". */
 fun agoText(ms: Long, now: Long, zone: ZoneId = ZoneId.systemDefault()): String {
@@ -86,10 +87,10 @@ fun messagesText(n: Int, atLeast: Boolean): String =
  * Picks up a session: opens the terminal it runs in, or asks the Mac to
  * resume it in a new tab; [onTerminal] gets the terminal either way.
  */
-suspend fun resumeOrOpen(api: Api, s: EarlierSession, onTerminal: (String) -> Unit) {
+suspend fun resumeOrOpen(api: Api, s: EarlierSession, onTerminal: (String) -> Unit, machine: String = "") {
     s.running?.let { onTerminal(it); return }
     try {
-        onTerminal(api.resume(s.agent, s.id))
+        onTerminal(api.resume(s.agent, s.id, machine))
     } catch (e: ApiError) {
         // It started running somewhere since the list came: open that one.
         e.terminal?.let { onTerminal(it); return }
@@ -178,7 +179,7 @@ fun SessionsList(
             sessions == null -> item { SessionSkeletons(5) }
             sessions.list.isEmpty() -> item {
                 Text(
-                    "No earlier sessions on the Mac yet. Start a task, and it shows up here once you've said something in it.",
+                    sessions.note.ifBlank { "No earlier sessions on the Mac yet. Start a task, and it shows up here once you've said something in it." },
                     style = Type.small, color = Ink.dust, modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp),
                 )
             }

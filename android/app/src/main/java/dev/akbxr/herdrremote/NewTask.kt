@@ -82,11 +82,12 @@ fun typedPath(filter: String, home: String): String? {
 }
 
 /**
- * A new task: pick a folder, pick an agent, say what to do. The Mac opens a
- * tab there running the agent with the task; [onStarted] gets its terminal.
+ * A new task: pick a machine (with others added), a folder, an agent, say
+ * what to do. The Mac opens a tab there running the agent with the task;
+ * [onStarted] gets its terminal.
  */
 @Composable
-fun NewTaskScreen(api: Api, host: String, onBack: () -> Unit, onStarted: (String) -> Unit) {
+fun NewTaskScreen(api: Api, host: String, machines: List<Machine> = emptyList(), onBack: () -> Unit, onStarted: (String) -> Unit) {
     val context = LocalContext.current
     val pairing = remember { Pairing(context) }
     val scope = rememberCoroutineScope()
@@ -112,12 +113,19 @@ fun NewTaskScreen(api: Api, host: String, onBack: () -> Unit, onStarted: (String
     var sessions by remember { mutableStateOf<List<EarlierSession>?>(null) }
     var resuming by remember { mutableStateOf<String?>(null) }
     var resumeProblem by remember { mutableStateOf<String?>(null) }
+    var sessionsNote by remember { mutableStateOf("") }
+    // Where it runs: "" this Mac, or a machine added in Herdr (gone: this Mac again).
+    var pickedMachine by rememberSaveable { mutableStateOf("") }
+    val machine = pickedMachine.takeIf { m -> m.isEmpty() || machines.any { it.name == m } } ?: ""
 
-    LaunchedEffect(api, picked, attempt) {
+    LaunchedEffect(api, machine, picked, attempt) {
         sessions = null
+        sessionsNote = ""
         resumeProblem = null
         val cwd = picked ?: return@LaunchedEffect
-        sessions = runCatching { api.sessions(cwd).list }.getOrDefault(emptyList())
+        val found = runCatching { api.sessions(cwd, machine) }.getOrNull()
+        sessions = found?.list.orEmpty()
+        sessionsNote = found?.note.orEmpty()
     }
 
     LaunchedEffect(api, agent, attempt) {
@@ -135,12 +143,12 @@ fun NewTaskScreen(api: Api, host: String, onBack: () -> Unit, onStarted: (String
         if (c.level(thinking) == null) thinking = null
     }
 
-    LaunchedEffect(api, attempt) {
+    LaunchedEffect(api, machine, attempt) {
         loadProblem = null
         runCatching {
             coroutineScope {
-                val f = async { api.folders() }
-                val a = async { api.agents() }
+                val f = async { api.folders(machine) }
+                val a = async { api.agents(machine) }
                 f.await() to a.await()
             }
         }.onSuccess { (f, a) ->
@@ -170,6 +178,19 @@ fun NewTaskScreen(api: Api, host: String, onBack: () -> Unit, onStarted: (String
 
     NewTaskForm(
         host = host,
+        machines = machines,
+        machine = machine,
+        onMachine = { m ->
+            if (m != machine) {
+                // Another machine's folders and agents: none of this one's.
+                pickedMachine = m
+                folders = null
+                agents = null
+                picked = null
+                filter = ""
+                problem = null
+            }
+        },
         folders = folders,
         agents = agents,
         loadProblem = loadProblem,
@@ -189,6 +210,7 @@ fun NewTaskScreen(api: Api, host: String, onBack: () -> Unit, onStarted: (String
         busy = busy,
         problem = problem,
         sessions = sessions,
+        sessionsNote = sessionsNote,
         resuming = resuming,
         resumeProblem = resumeProblem,
         onSession = pick@{ s ->
@@ -196,7 +218,7 @@ fun NewTaskScreen(api: Api, host: String, onBack: () -> Unit, onStarted: (String
             resuming = s.id
             resumeProblem = null
             scope.launch {
-                runCatching { resumeOrOpen(api, s, onStarted) }.onFailure { resumeProblem = it.advice() }
+                runCatching { resumeOrOpen(api, s, onStarted, machine) }.onFailure { resumeProblem = it.advice() }
                 resuming = null
             }
         },
@@ -209,7 +231,7 @@ fun NewTaskScreen(api: Api, host: String, onBack: () -> Unit, onStarted: (String
             problem = null
             scope.launch {
                 val withModel = takesModel(id)
-                runCatching { api.startTask(cwd, id, prompt.trim(), model.takeIf { withModel }, thinking.takeIf { withModel }) }
+                runCatching { api.startTask(cwd, id, prompt.trim(), model.takeIf { withModel }, thinking.takeIf { withModel }, machine) }
                     .onSuccess { terminal -> pairing.lastAgent = id; onStarted(terminal) }
                     .onFailure { problem = it.advice() }
                 busy = false
@@ -223,6 +245,9 @@ fun NewTaskScreen(api: Api, host: String, onBack: () -> Unit, onStarted: (String
 @Composable
 fun NewTaskForm(
     host: String,
+    machines: List<Machine> = emptyList(),  // the others added in Herdr; none: no chooser
+    machine: String = "",
+    onMachine: (String) -> Unit = {},
     folders: TaskFolders?,
     agents: List<TaskAgent>?,
     loadProblem: String?,
@@ -242,6 +267,7 @@ fun NewTaskForm(
     busy: Boolean,
     problem: String?,
     sessions: List<EarlierSession>? = null,
+    sessionsNote: String = "",  // why there are none (the machine's word)
     resuming: String? = null,
     resumeProblem: String? = null,
     onSession: (EarlierSession) -> Unit = {},
@@ -267,8 +293,19 @@ fun NewTaskForm(
                 Spacer(Modifier.height(4.dp))
                 Text("New task", style = Type.headline, color = Ink.text)
                 Spacer(Modifier.height(6.dp))
-                Text("Pick a folder and an agent, say what to do. It starts on the Mac and opens here.", style = Type.body, color = Ink.dust)
+                val where = machines.firstOrNull { it.name == machine }?.label ?: "the Mac"
+                Text("Pick a folder and an agent, say what to do. It starts on $where and opens here.", style = Type.body, color = Ink.dust)
                 Spacer(Modifier.height(20.dp))
+                if (machines.isNotEmpty()) {
+                    StepLabel("Machine")
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        MachineChip("This Mac", null, selected = machine.isEmpty()) { onMachine("") }
+                        machines.forEach { m ->
+                            MachineChip(m.label, m.state.takeIf { m.state != "connected" }, selected = m.name == machine) { onMachine(m.name) }
+                        }
+                    }
+                    Spacer(Modifier.height(22.dp))
+                }
                 loadProblem?.let { Notice(it, action = "Try again" to onRetry); Spacer(Modifier.height(16.dp)) }
             }
         }
@@ -299,6 +336,16 @@ fun NewTaskForm(
                         Text(shortPath(picked, home), style = Type.small, color = Ink.dust, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                     QuietButton("Change", color = Ink.text) { onPick(null) }
+                }
+            }
+        }
+
+        // None, and the machine says why (e.g. none kept there).
+        if (sessions?.isEmpty() == true && sessionsNote.isNotBlank()) {
+            item {
+                Column(Modifier.padding(start = 24.dp, end = 24.dp, top = 22.dp)) {
+                    StepLabel("Earlier sessions here")
+                    Text(sessionsNote, style = Type.small, color = Ink.dust)
                 }
             }
         }
@@ -341,7 +388,7 @@ fun NewTaskForm(
                         agents.forEach { a -> AgentChip(a.name, selected = a.id == agent) { onAgent(a.id) } }
                     }
                 }
-                if (takesModel(agent)) {
+                if (takesModel(agent) && modelChoices?.supported != false) {
                     Spacer(Modifier.height(10.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         PickerBox(
@@ -477,6 +524,35 @@ private fun FolderRow(name: String, path: String, onClick: () -> Unit) {
     ) {
         Text(name, style = Type.title, color = Ink.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
         Text(path, style = Type.small, color = Ink.dust, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+/**
+ * A machine to start on; [state] set (not connected): shown with it, and
+ * it can't be picked.
+ */
+@Composable
+private fun MachineChip(label: String, state: String?, selected: Boolean, onClick: () -> Unit) {
+    val enabled = state == null
+    Row(
+        Modifier
+            .heightIn(min = 44.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(if (selected) Ink.text else if (enabled) Ink.pen else Ink.night)
+            .border(1.dp, if (selected) Ink.text else Ink.rule, RoundedCornerShape(10.dp))
+            .clickable(enabled = enabled, role = Role.RadioButton, onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (state != null) {
+            MachineDot(state)
+            Spacer(Modifier.width(8.dp))
+        }
+        Text(
+            if (state == null) label else "$label · ${machineStateWord(state)}",
+            style = Type.label.copy(fontSize = Type.body.fontSize),
+            color = when { selected -> Ink.night; enabled -> Ink.text; else -> Ink.dust }, maxLines = 1,
+        )
     }
 }
 
