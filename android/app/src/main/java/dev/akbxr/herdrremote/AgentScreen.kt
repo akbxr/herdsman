@@ -484,11 +484,22 @@ fun AgentScreen(api: Api, terminal: String, agent: Agent?, appScope: CoroutineSc
     var switchingTo by remember(terminal) { mutableStateOf<CurrentModel?>(null) }
     val currentModel = switchingTo ?: chat?.current ?: CurrentModel()
     val agentBusy = chat?.status?.state?.takeIf { it == "working" || it == "blocked" }
+    // On another machine the model may not be switchable from here: asked
+    // first, and the chip shows only once the Mac says it can.
+    val remote = (agent?.machine ?: machineOf(terminal)).isNotEmpty()
+    var modelsSupported by remember(terminal) { mutableStateOf<Boolean?>(null) }
+    LaunchedEffect(remote, chatAgent) {
+        if (!remote || chatAgent == null || !switchesLive(chatAgent) || modelChoices?.agent == chatAgent) return@LaunchedEffect
+        runCatching { api.models(chatAgent, terminal) }.onSuccess { modelChoices = it; modelsSupported = it.supported }
+    }
     LaunchedEffect(modelSheet, chatAgent) {
         if (!modelSheet || chatAgent == null || modelChoices?.agent == chatAgent) return@LaunchedEffect
         modelLoadProblem = null
-        runCatching { api.models(chatAgent) }.onSuccess { modelChoices = it }.onFailure { modelLoadProblem = it.advice(link) }
+        runCatching { api.models(chatAgent, terminal) }
+            .onSuccess { modelChoices = it; modelsSupported = it.supported; if (!it.supported) modelSheet = false }
+            .onFailure { modelLoadProblem = it.advice(link) }
     }
+    val showModels = switchesLive(chatAgent) && if (remote) modelsSupported == true else modelsSupported != false
     if (modelSheet && chatAgent != null) {
         val agentName = agent?.title ?: agentTitle(chatAgent)
         LiveModelSheet(
@@ -509,7 +520,7 @@ fun AgentScreen(api: Api, terminal: String, agent: Agent?, appScope: CoroutineSc
                 scope.launch {
                     runCatching { api.switchModel(terminal, chatAgent, m, t) }
                         .onSuccess { now -> chat = chat?.copy(current = now) }
-                        .onFailure { problem = it.advice() }
+                        .onFailure { if (it is ModelsUnsupported) modelsSupported = false else problem = it.advice() }
                     switchingTo = null
                 }
             },
@@ -520,7 +531,7 @@ fun AgentScreen(api: Api, terminal: String, agent: Agent?, appScope: CoroutineSc
     AgentContent(
         mode = mode,
         chatAvailable = chatAvailable,
-        modelChip = if (switchesLive(chatAgent)) {
+        modelChip = if (showModels) {
             { ModelChip(currentModel, dim = agentBusy != null || switchingTo != null, switching = switchingTo != null) { if (switchingTo == null) modelSheet = true } }
         } else null,
         onMode = { userMode = it },
@@ -728,8 +739,13 @@ fun AgentContent(
             }
             Column(Modifier.weight(1f)) {
                 Text(name, style = Type.title, color = Ink.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                // Another machine's terminal says where: "Working · vps · Tab 2 · t3".
+                val machine = agent?.machine ?: machineOf(terminal)
                 Text(
-                    listOfNotNull(agent?.state?.word, agent?.let { "Tab ${it.tabName}" }, terminal).joinToString("  ·  "),
+                    listOfNotNull(
+                        agent?.state?.word, machine.ifEmpty { null }, agent?.let { "Tab ${it.tabName}" },
+                        if (machine.isEmpty()) terminal else terminal.substringAfterLast('/'),
+                    ).joinToString("  ·  "),
                     style = Type.small, color = agent?.state?.takeIf { it != State.Idle }?.tagColor() ?: Ink.dust, maxLines = 1,
                 )
             }

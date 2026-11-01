@@ -52,6 +52,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.input.KeyboardType
@@ -204,8 +206,11 @@ fun HerdScreen(
     notifications: @Composable () -> Unit = {},
     notifyOn: Boolean = false,
     onNotifyMenu: () -> Unit = {},  // the bell: turn off, background setting
+    onMachines: () -> Unit = {},  // the machines sheet: add, reconnect, remove
 ) {
     val agents = herd?.agents.orEmpty().sortedWith(compareBy({ order.indexOf(it.state) }, { it.tabName }))
+    // Terminals on other machines, or a machine added: grouped by machine.
+    val groups = herd?.let { machineGroups(it, agents) }.orEmpty()
     val needs = agents.count { it.state == State.NeedsYou }
     val working = agents.count { it.state == State.Working }
 
@@ -229,6 +234,12 @@ fun HerdScreen(
                             contentAlignment = Alignment.Center,
                         ) { Icon(Icons.Filled.Notifications, contentDescription = "Notifications are on", tint = Ink.dust, modifier = Modifier.size(18.dp)) }
                     }
+                    // Other machines: their sheet from here (none yet: from New).
+                    if (groups.isNotEmpty()) Box(
+                        Modifier.size(40.dp).clip(RoundedCornerShape(10.dp)).clickable(role = Role.Button, onClick = onMachines)
+                            .semantics { contentDescription = "Machines" },
+                        contentAlignment = Alignment.Center,
+                    ) { MachinesIcon(tint = Ink.dust) }
                     QuietButton("Pair again", onClick = onPairAgain)
                     QuietButton("New", color = Ink.text, onClick = onNew)
                 }
@@ -252,8 +263,15 @@ fun HerdScreen(
                 Spacer(Modifier.height(14.dp))
             }
         }
-        items(agents, key = { it.terminal }) { agent ->
-            AgentRow(agent, onClick = { onOpen(agent) }, onLongClick = { onActions(agent) })
+        if (groups.isEmpty()) {
+            items(agents, key = { it.terminal }) { agent ->
+                AgentRow(agent, onClick = { onOpen(agent) }, onLongClick = { onActions(agent) })
+            }
+        } else groups.forEach { group ->
+            item(key = "m:" + group.name) { MachineHeader(group, onClick = onMachines) }
+            items(group.agents, key = { it.terminal }) { agent ->
+                AgentRow(agent, onClick = { onOpen(agent) }, onLongClick = { onActions(agent) })
+            }
         }
         if (agents.isNotEmpty()) item {
             Text(

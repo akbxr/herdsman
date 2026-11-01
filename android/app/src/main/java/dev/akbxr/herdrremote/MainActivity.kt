@@ -82,7 +82,8 @@ private fun App(link: String?, onLinkUsed: () -> Unit, openFromNotification: Str
     val onScreen = rememberOnScreen()
     // A network change (Tailscale back on, Wi-Fi back) asks again at once.
     val net by rememberLink()
-    LaunchedEffect(api, onScreen, net) {
+    var herdTick by remember { mutableStateOf(0) }  // bumped: ask again now (a machine added or removed)
+    LaunchedEffect(api, onScreen, net, herdTick) {
         val a = api ?: return@LaunchedEffect
         if (!onScreen) return@LaunchedEffect
         while (true) {
@@ -129,7 +130,7 @@ private fun App(link: String?, onLinkUsed: () -> Unit, openFromNotification: Str
         if (newTask) {
             BackHandler { newTask = false }
             NewTaskScreen(
-                api = a, host = host,
+                api = a, host = host, machines = herd?.machines.orEmpty(),
                 onBack = { newTask = false },
                 onStarted = { t -> newTask = false; section = Section.Herd; openTerminal = t },
             )
@@ -150,6 +151,8 @@ private fun App(link: String?, onLinkUsed: () -> Unit, openFromNotification: Str
         var newTab by remember { mutableStateOf(false) }
         var actionsFor by remember { mutableStateOf<Agent?>(null) }
         var notifyMenu by remember { mutableStateOf(false) }
+        var machinesSheet by remember { mutableStateOf(false) }
+        if (machinesSheet) MachinesSheet(a, scope, onChanged = { herdTick++ }, onDismiss = { machinesSheet = false })
         val setNotify = { on: Boolean ->
             notify = on
             pairing.notify = on
@@ -164,6 +167,7 @@ private fun App(link: String?, onLinkUsed: () -> Unit, openFromNotification: Str
                 SheetAction("New task", "An agent in a folder you pick, on what you ask; opens here") { newMenu = false; newTask = true },
                 SheetAction("Resume a session", "Pick up an earlier tego or Claude Code conversation in a new tab") { newMenu = false; resumeList = true },
                 SheetAction("New tab", "A shell or a program, in the folder of the terminal focused on the Mac") { newMenu = false; newTab = true },
+                SheetAction("Machines", "Add a machine Herdr runs terminals on over ssh, or manage them") { newMenu = false; machinesSheet = true },
             ),
         )
         if (newTab) NewTabSheet(a, scope, onDismiss = { newTab = false }, onProblem = tell)
@@ -185,6 +189,7 @@ private fun App(link: String?, onLinkUsed: () -> Unit, openFromNotification: Str
                         notifications = { NotificationsRow(on = notify, onChange = setNotify) },
                         notifyOn = notify,
                         onNotifyMenu = { notifyMenu = true },
+                        onMachines = { machinesSheet = true },
                     )
                     Section.Screen -> ScreenScreen(api = a, herd = herd)
                 }

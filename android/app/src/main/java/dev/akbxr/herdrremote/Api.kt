@@ -37,11 +37,15 @@ data class Agent(
     val spaceName: String,
     val pane: String = "", // its pane in Herdr's layout,
     val spaceId: String = "",  // to show its tab on the Mac when another space shows
+    val machine: String = "",  // the machine it runs on ("": this Mac)
 ) {
     val title get() = label ?: app
     /** The number stamped on the tag: the address without its machine. */
     val tagNumber get() = terminal.substringAfterLast('/')
 }
+
+/** The machine in a terminal's address: "vps" for "vps/t7", "" for "t7" (this Mac). */
+fun machineOf(terminal: String): String = terminal.substringBeforeLast('/', "")
 
 /** A tab on the Mac, in its space; [active]: the tab its space shows. */
 data class Tab(
@@ -51,12 +55,95 @@ data class Tab(
     val spaceId: String = "",
     val spaceName: String = "",
     val spaceActive: Boolean = true,  // the space the window shows
+    val machine: String = "",  // its space's machine ("": this Mac)
 )
 
-data class Herd(val layout: String, val agents: List<Agent>, val tabs: List<Tab>)
+/**
+ * A machine Herdr drives over ssh, or this Mac ([local], name ""). [state]:
+ * connecting, connected, needs_login, unreachable; [why]: what went wrong.
+ */
+data class Machine(
+    val name: String,
+    val label: String = name,
+    val host: String = "",
+    val state: String = "connected",
+    val why: String = "",
+    val local: Boolean = false,
+) {
+    val connected get() = state == "connected"
+    /** Can be asked to connect again: it lost its connection or wants a password. */
+    val reconnectable get() = state == "needs_login" || state == "unreachable"
+
+    companion object {
+        fun from(o: JSONObject) = Machine(
+            name = o.str("name"),
+            label = o.str("label").ifEmpty { o.str("name").ifEmpty { "This Mac" } },
+            host = o.str("host"),
+            state = o.str("state").ifEmpty { "connected" },
+            why = o.str("why"),
+            local = o.optBoolean("local"),
+        )
+    }
+}
+
+data class Herd(
+    val layout: String,
+    val agents: List<Agent>,
+    val tabs: List<Tab>,
+    val machines: List<Machine> = emptyList(),  // the other machines added in Herdr
+) {
+    companion object {
+        /** Reads GET /api/state: the Herdr window's spaces, tabs and terminals, and its machines. */
+        fun from(root: JSONObject): Herd {
+            val layout = root.optJSONObject("status")?.optString("layout") ?: ""
+            val agents = mutableListOf<Agent>()
+            val tabs = mutableListOf<Tab>()
+            val spaces = root.optJSONObject("ls")?.optJSONArray("spaces") ?: JSONArray()
+            for (i in 0 until spaces.length()) {
+                val space = spaces.getJSONObject(i)
+                val activeSpace = space.optBoolean("active")
+                val spaceMachine = space.str("machine")
+                val tabList = space.optJSONArray("tabs") ?: JSONArray()
+                for (j in 0 until tabList.length()) {
+                    val tab = tabList.getJSONObject(j)
+                    val tabId = tab.optString("id")
+                    val tabName = tab.optString("name")
+                    tabs += Tab(tabId, tabName, tab.optBoolean("active"), space.optString("id"), space.optString("name"), activeSpace, spaceMachine)
+                    val terms = tab.optJSONArray("terminals") ?: JSONArray()
+                    for (k in 0 until terms.length()) {
+                        val t = terms.getJSONObject(k)
+                        val terminal = t.optString("terminal")
+                        agents += Agent(
+                            terminal = terminal,
+                            pane = t.optString("pane"),
+                            app = t.optString("app").ifBlank { "shell" }.takeUnless { it == "null" } ?: "shell",
+                            label = t.optString("name").takeUnless { it.isBlank() || it == "null" },
+                            state = State.of(t.optString("status").takeUnless { it == "null" }),
+                            tabId = tabId,
+                            tabName = tabName,
+                            tabActive = tab.optBoolean("active") && activeSpace,
+                            spaceName = space.optString("name"),
+                            spaceId = space.optString("id"),
+                            machine = machineOf(terminal).ifEmpty { spaceMachine },
+                        )
+                    }
+                }
+            }
+            val list = root.optJSONArray("machines") ?: JSONArray()
+            val machines = (0 until list.length()).map { Machine.from(list.getJSONObject(it)) }.filter { !it.local && it.name.isNotEmpty() }
+            return Herd(layout, agents, tabs, machines)
+        }
+    }
+}
+
+/** A string field; JSON null and a missing field are "". */
+internal fun JSONObject.str(key: String): String = if (isNull(key)) "" else optString(key)
 
 /** The Mac said no; [terminal]: the one it points to instead (a session running already). */
-class ApiError(message: String, val terminal: String? = null) : IOException(message)
+open class ApiError(message: String, val terminal: String? = null) : IOException(message)
+
+/** The terminal's model can't be switched from the phone (another machine's): the picker hides. */
+class ModelsUnsupported(why: String) : ApiError(why.ifBlank { "The model can't be switched here." })
 
 /** A program's status change, in its own words (OSC 7501 via herdr-core). */
 data class AgentEvent(
@@ -116,40 +203,29 @@ class Api(val base: String, val token: String) {
 
     suspend fun ping(): String = call("/api/ping").optString("host", "your Mac")
 
-    suspend fun herd(): Herd {
-        val root = call("/api/state")
-        val layout = root.optJSONObject("status")?.optString("layout") ?: ""
-        val agents = mutableListOf<Agent>()
-        val tabs = mutableListOf<Tab>()
-        val spaces = root.optJSONObject("ls")?.optJSONArray("spaces") ?: JSONArray()
-        for (i in 0 until spaces.length()) {
-            val space = spaces.getJSONObject(i)
-            val activeSpace = space.optBoolean("active")
-            val tabList = space.optJSONArray("tabs") ?: JSONArray()
-            for (j in 0 until tabList.length()) {
-                val tab = tabList.getJSONObject(j)
-                val tabId = tab.optString("id")
-                val tabName = tab.optString("name")
-                tabs += Tab(tabId, tabName, tab.optBoolean("active"), space.optString("id"), space.optString("name"), activeSpace)
-                val terms = tab.optJSONArray("terminals") ?: JSONArray()
-                for (k in 0 until terms.length()) {
-                    val t = terms.getJSONObject(k)
-                    agents += Agent(
-                        terminal = t.optString("terminal"),
-                        pane = t.optString("pane"),
-                        app = t.optString("app").ifBlank { "shell" }.takeUnless { it == "null" } ?: "shell",
-                        label = t.optString("name").takeUnless { it.isBlank() || it == "null" },
-                        state = State.of(t.optString("status").takeUnless { it == "null" }),
-                        tabId = tabId,
-                        tabName = tabName,
-                        tabActive = tab.optBoolean("active") && activeSpace,
-                        spaceName = space.optString("name"),
-                        spaceId = space.optString("id"),
-                    )
-                }
-            }
-        }
-        return Herd(layout, agents, tabs)
+    suspend fun herd(): Herd = Herd.from(call("/api/state"))
+
+    /** This Mac first, then the machines added in Herdr (MachinesSheet). */
+    suspend fun machines(): List<Machine> {
+        val a = call("/api/machines").optJSONArray("machines") ?: return emptyList()
+        return (0 until a.length()).map { Machine.from(a.getJSONObject(it)) }
+    }
+
+    /** Adds a machine by its ssh address (user@host, or an ssh config alias); [name]: how Herdr calls it (empty: its own pick). */
+    suspend fun addMachine(host: String, name: String = ""): Machine {
+        val body = JSONObject().put("host", host)
+        if (name.isNotBlank()) body.put("name", name)
+        return Machine.from(call("/api/machines", body, timeoutMs = 60_000).optJSONObject("machine") ?: JSONObject().put("name", name).put("host", host))
+    }
+
+    /** Herdr forgets the machine; its terminals keep running there. */
+    suspend fun removeMachine(name: String) {
+        call("/api/machines/remove", JSONObject().put("name", name), timeoutMs = 30_000)
+    }
+
+    /** Connects to the machine again; fails (409) when it needs a password typed on the Mac. */
+    suspend fun connectMachine(name: String) {
+        call("/api/machines/connect", JSONObject().put("name", name), timeoutMs = 60_000)
     }
 
     suspend fun read(terminal: String, lines: Int = 300): String {
@@ -245,36 +321,42 @@ class Api(val base: String, val token: String) {
         call("/api/commit/suggest?terminal=" + enc(terminal) + paths.joinToString("") { "&path=" + enc(it) }, timeoutMs = 20_000)
             .optString("message")
 
-    /** Where a new task can start: recent folders, then git projects (NewTask.kt). */
-    suspend fun folders(): TaskFolders {
-        val o = call("/api/folders", timeoutMs = 15_000)
+    /** "?machine=vps", or "" for this Mac. */
+    private fun onMachine(machine: String) = if (machine.isEmpty()) "" else "?machine=" + enc(machine)
+
+    /** Where a new task can start on [machine] ("": this Mac): recent folders, then git projects (NewTask.kt). */
+    suspend fun folders(machine: String = ""): TaskFolders {
+        val o = call("/api/folders" + onMachine(machine), timeoutMs = 15_000)
         fun list(key: String) = o.optJSONArray(key)?.let { a ->
             (0 until a.length()).map { a.getJSONObject(it).let { f -> TaskFolder(f.optString("path"), f.optString("name")) } }
         }.orEmpty()
         return TaskFolders(o.optString("home"), list("recent"), list("projects"))
     }
 
-    /** The agents installed on the Mac. */
-    suspend fun agents(): List<TaskAgent> {
-        val a = call("/api/agents").optJSONArray("agents") ?: return emptyList()
+    /** The agents installed on [machine] ("": this Mac). */
+    suspend fun agents(machine: String = ""): List<TaskAgent> {
+        val a = call("/api/agents" + onMachine(machine), timeoutMs = 15_000).optJSONArray("agents") ?: return emptyList()
         return (0 until a.length()).map { a.getJSONObject(it).let { o -> TaskAgent(o.optString("id"), o.optString("name")) } }
     }
 
     /**
      * Opens a tab in [cwd] running [agent] on [prompt], with a [model] and
-     * [thinking] level (null: the agent's own default); returns its terminal.
+     * [thinking] level (null: the agent's own default), on [machine] ("":
+     * this Mac); returns its terminal (vps/t7 on another machine).
      */
-    suspend fun startTask(cwd: String, agent: String, prompt: String, model: String? = null, thinking: String? = null): String {
+    suspend fun startTask(cwd: String, agent: String, prompt: String, model: String? = null, thinking: String? = null, machine: String = ""): String {
         val body = JSONObject().put("cwd", cwd).put("agent", agent).put("prompt", prompt)
+        if (machine.isNotEmpty()) body.put("machine", machine)
         if (model != null) body.put("model", model)
         if (thinking != null) body.put("thinking", thinking)
         return call("/api/task", body, timeoutMs = 30_000)
             .optString("terminal").ifBlank { throw ApiError("The Mac opened the tab but didn't say which terminal it is.") }
     }
 
-    /** Earlier sessions agents can resume, newest first: in [cwd], or anywhere (Sessions.kt). */
-    suspend fun sessions(cwd: String? = null): EarlierSessions {
-        val o = call("/api/sessions" + (cwd?.let { "?cwd=" + enc(it) } ?: ""), timeoutMs = 15_000)
+    /** Earlier sessions agents can resume, newest first: in [cwd], or anywhere, on [machine] (Sessions.kt). */
+    suspend fun sessions(cwd: String? = null, machine: String = ""): EarlierSessions {
+        val q = listOfNotNull(cwd?.let { "cwd=" + enc(it) }, machine.takeIf { it.isNotEmpty() }?.let { "machine=" + enc(it) })
+        val o = call("/api/sessions" + (if (q.isEmpty()) "" else "?" + q.joinToString("&")), timeoutMs = 15_000)
         val a = o.optJSONArray("sessions")
         val list = (0 until (a?.length() ?: 0)).map { i ->
             a!!.getJSONObject(i).let { s ->
@@ -285,19 +367,24 @@ class Api(val base: String, val token: String) {
                 )
             }
         }
-        return EarlierSessions(o.optString("home"), list)
+        return EarlierSessions(o.optString("home"), list, o.str("note"))
     }
 
     /**
      * Opens a tab in a session's folder resuming it; returns its terminal. A
      * session running already fails with [ApiError.terminal] set to its terminal.
      */
-    suspend fun resume(agent: String, id: String): String =
-        call("/api/resume", JSONObject().put("agent", agent).put("id", id), timeoutMs = 30_000)
+    suspend fun resume(agent: String, id: String, machine: String = ""): String =
+        call("/api/resume", JSONObject().put("agent", agent).put("id", id).apply { if (machine.isNotEmpty()) put("machine", machine) }, timeoutMs = 30_000)
             .optString("terminal").ifBlank { throw ApiError("The Mac opened the tab but didn't say which terminal it is.") }
 
-    /** The models and thinking levels an agent offers (Models.kt). */
-    suspend fun models(agent: String): ModelChoices = ModelChoices.from(call("/api/models?agent=" + enc(agent), timeoutMs = 15_000))
+    /**
+     * The models and thinking levels an agent offers (Models.kt); with the
+     * [terminal] it runs in, [ModelChoices.supported] says whether it can be
+     * switched there (not on another machine).
+     */
+    suspend fun models(agent: String, terminal: String? = null): ModelChoices =
+        ModelChoices.from(call("/api/models?agent=" + enc(agent) + (terminal?.let { "&terminal=" + enc(it) } ?: ""), timeoutMs = 15_000))
 
     /**
      * Switches the running agent's model and/or thinking level with its own
@@ -308,7 +395,9 @@ class Api(val base: String, val token: String) {
         val body = JSONObject().put("terminal", terminal).put("agent", agent)
         if (model != null) body.put("model", model)
         if (thinking != null) body.put("thinking", thinking)
-        return CurrentModel.from(call("/api/session", body, timeoutMs = 60_000).optJSONObject("current"))
+        val o = call("/api/session", body, timeoutMs = 60_000)
+        if (o.has("supported") && !o.optBoolean("supported", true)) throw ModelsUnsupported(o.str("why"))
+        return CurrentModel.from(o.optJSONObject("current"))
     }
 
     suspend fun interrupt(terminal: String) {

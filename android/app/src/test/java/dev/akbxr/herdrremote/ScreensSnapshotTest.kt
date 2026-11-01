@@ -640,4 +640,103 @@ class ScreensSnapshotTest {
     @Test fun herdEmpty() = paparazzi.snapshot {
         Frame { HerdScreen("AKBARs-MacBook-Air.local", Herd("main-full", emptyList(), emptyList()), problem = null, onOpen = {}, onPairAgain = {}) }
     }
+
+    // Machines (Machines.kt): terminals on this Mac and on vps, gpu-box unreachable.
+    private val vps = Machine("vps", "vps", "akbar@vps.unli.dev", "connected")
+    private val gpu = Machine("gpu", "gpu", "gpu-box", "unreachable", "ssh: connect to host gpu-box port 22: Operation timed out")
+    private val herdMachines = Herd(
+        layout = "main-full",
+        agents = herd.agents.take(2) + listOf(
+            Agent("vps/t3", "claude-code", "deploy", State.Working, "tv1", "1", false, "api", machine = "vps"),
+            Agent("vps/t5", "tego", null, State.Done, "tv2", "2", false, "api", machine = "vps"),
+            Agent("vps/t8", "shell", null, State.Idle, "tv3", "3", false, "api", machine = "vps"),
+        ),
+        tabs = herd.tabs,
+        machines = listOf(vps, gpu),
+    )
+
+    @Test fun herdMachines() = paparazzi.snapshot {
+        Frame {
+            NoShimmer {
+                Column(Modifier.fillMaxSize()) {
+                    Box(Modifier.weight(1f)) {
+                        HerdScreen("AKBARs-MacBook-Air.local", herdMachines, problem = null, onOpen = {}, onPairAgain = {}, notifyOn = true)
+                    }
+                    BottomBar(listOf("Herd" to true, "Screen" to false), badge = "1", onSelect = {})
+                }
+            }
+        }
+    }
+
+    @Test fun machinesSheet() = paparazzi.snapshot {
+        HerdrTheme {
+            NoShimmer {
+                SheetFrame {
+                    MachinesSheetContent(
+                        machines = listOf(
+                            Machine("", "This Mac", "AKBARs-MacBook-Air", "connected", local = true),
+                            vps,
+                            gpu,
+                            Machine("box", "box", "root@10.0.0.7", "needs_login", "ssh asks for a password"),
+                            Machine("pi", "pi", "pi.local", "connecting"),
+                        ),
+                        loadProblem = null, busy = emptySet(),
+                        hints = mapOf("box" to "box needs its password typed on the Mac: open the Herdr window and enter it there."),
+                        host = "akbar@build", onHost = {}, name = "", onName = {},
+                        adding = false, addProblem = "ssh: Could not resolve hostname build: nodename nor servname provided",
+                        onAdd = {}, onReconnect = {}, onRemove = {},
+                    )
+                }
+            }
+        }
+    }
+
+    @Test fun newTaskMachines() = paparazzi.snapshot {
+        Frame {
+            NoShimmer {
+                NewTaskForm(
+                    host = "AKBARs-MacBook-Air.local",
+                    machines = listOf(vps, gpu), machine = "vps",
+                    folders = TaskFolders(
+                        "/home/akbar",
+                        recent = listOf(TaskFolder("/home/akbar/api", "api"), TaskFolder("/home/akbar", "~")),
+                        projects = listOf(TaskFolder("/home/akbar/src/unli.dev", "unli.dev"), TaskFolder("/home/akbar/src/billing", "billing")),
+                    ),
+                    agents = taskAgents.take(2), loadProblem = null, onRetry = {},
+                    filter = "", onFilter = {}, picked = null, onPick = {}, agent = "claude", onAgent = {},
+                    prompt = "", onPrompt = {}, busy = false, problem = null, onBack = {}, onStart = {},
+                )
+            }
+        }
+    }
+
+    @Test fun newTaskMachineSessionsNote() = paparazzi.snapshot {
+        Frame {
+            NoShimmer {
+                NewTaskForm(
+                    host = "AKBARs-MacBook-Air.local",
+                    machines = listOf(vps, gpu), machine = "vps",
+                    folders = TaskFolders("/home/akbar", emptyList(), emptyList()),
+                    agents = taskAgents.take(2), loadProblem = null, onRetry = {},
+                    filter = "", onFilter = {}, picked = "/home/akbar/api", onPick = {}, agent = "claude", onAgent = {},
+                    modelChoices = claudeChoices.copy(supported = false),
+                    prompt = "Deploy the api", onPrompt = {}, busy = false, problem = null,
+                    sessions = emptyList(), sessionsNote = "Earlier sessions on vps can't be listed yet.",
+                    onBack = {}, onStart = {},
+                )
+            }
+        }
+    }
+
+    @Test fun chatRemote() = paparazzi.snapshot {
+        Frame {
+            AgentContent(
+                mode = "chat", chatAvailable = true, snippets = Snippets.DEFAULT,
+                chatSlot = { ChatView(chatItems.take(4), null, "deploy", onAnswer = {}, onOpenTerminal = {}) },
+                terminal = "vps/t3", agent = herdMachines.agents[2], status = TermStatus(), ctrl = false, problem = null,
+                message = "", onMessage = {}, attachments = emptyList(), sending = false, refused = false,
+                onBack = {}, onMore = {}, onAttach = {}, onRemove = {}, onSend = {}, onKey = {},
+            ) {}
+        }
+    }
 }

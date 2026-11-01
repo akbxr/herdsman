@@ -98,7 +98,9 @@ fun ScreenScreen(api: Api, herd: Herd?) {
                     // Each space's name before its tabs, when there are several.
                     if (spaces.size > 1 && (i == 0 || tabs[i - 1].spaceId != tab.spaceId)) {
                         if (i > 0) Spacer(Modifier.width(6.dp))
-                        Text(tab.spaceName, style = Type.small, color = if (tab.spaceActive) Ink.text else Ink.dust, maxLines = 1)
+                        // Another machine's space says which: "api · vps".
+                        val spaceLabel = if (tab.machine.isEmpty()) tab.spaceName else "${tab.spaceName} · ${tab.machine}"
+                        Text(spaceLabel, style = Type.small, color = if (tab.spaceActive) Ink.text else Ink.dust, maxLines = 1)
                     }
                     val shown = tab.active && tab.spaceActive
                     val agents = herd?.agents.orEmpty().filter { it.tabId == tab.id }

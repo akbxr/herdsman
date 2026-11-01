@@ -52,6 +52,8 @@ data class LevelChoice(val id: String, val label: String, val detail: String = "
 /**
  * What an agent offers (GET /api/models). [thinkingName]: what it calls the
  * level (Thinking, Effort, Reasoning). [live]: a running session can switch.
+ * [supported] false: not from the phone for that terminal (another
+ * machine's, [why]): the picker hides.
  */
 data class ModelChoices(
     val agent: String,
@@ -60,6 +62,8 @@ data class ModelChoices(
     val thinkingName: String = "Thinking",
     val live: Boolean = false,
     val note: String = "",
+    val supported: Boolean = true,
+    val why: String = "",
 ) {
     fun model(id: String?) = models.firstOrNull { it.id == id }
     fun level(id: String?) = thinking.firstOrNull { it.id == id }
@@ -76,6 +80,8 @@ data class ModelChoices(
             thinkingName = o.optString("thinkingName").ifBlank { "Thinking" },
             live = o.optBoolean("live"),
             note = o.optString("note"),
+            supported = o.optBoolean("supported", true),
+            why = o.str("why"),
         )
     }
 }
@@ -321,9 +327,9 @@ fun DoneFooter(onDone: () -> Unit) {
     PrimaryButton("Done", modifier = Modifier.fillMaxWidth().padding(start = 24.dp, end = 24.dp, top = 10.dp, bottom = 12.dp), onClick = onDone)
 }
 
-/** A quiet note: why something waits (the blue of working). */
+/** A quiet note: why something waits (the blue of working). Machines.kt too. */
 @Composable
-private fun Hint(text: String) {
+fun Hint(text: String) {
     Row(
         Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Ink.blue.copy(alpha = 0.10f)).padding(horizontal = 14.dp, vertical = 12.dp),
         verticalAlignment = Alignment.Top,
