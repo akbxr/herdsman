@@ -43,7 +43,9 @@ type server struct {
 	awake     *keepAwake // nil with -awake=false
 	herdr     string     // herdr-app binary
 	hc        string     // hc binary
+	herdrSock string     // the herdr CLI's default session's API socket; "": none
 	shotDir   string
+	uploadDir string // where uploads for herdr CLI panes go ("": ~/Library/Application Support/herdr-remote/uploads)
 
 	// For tests; empty or nil: the real ones.
 	home         string                 // where recent folders and projects are looked for
@@ -142,7 +144,7 @@ func main() {
 	}
 	host, _ := os.Hostname()
 
-	s := &server{token: token, tokenFile: *tokenFile, herdr: findTool("herdr-app"), hc: findTool("hc")}
+	s := &server{token: token, tokenFile: *tokenFile, herdr: findTool("herdr-app"), hc: findTool("hc"), herdrSock: defaultHerdrSock()}
 	if s.shotDir, err = os.MkdirTemp("", "herdr-remote-"); err != nil {
 		log.Fatal(err)
 	}
@@ -187,8 +189,12 @@ func main() {
 	mux.HandleFunc("GET /api/commit/suggest", s.auth(s.commitSuggest)) // a message from the changed files' names
 	mux.HandleFunc("POST /api/discard", s.auth(s.discard))             // one file back as the last commit has it
 
+	// The herdr CLI's tabs and panes (herdrcontrol.go).
+	mux.HandleFunc("POST /api/herdr", s.auth(s.herdrControl))
+
 	s.events = newEventHub(s.hc)
 	go s.events.run(context.Background())
+	go s.herdrEvents(context.Background()) // the herdr CLI's agents, into the same hub
 	if *awake {
 		s.awake = &keepAwake{hub: s.events, bin: "/usr/bin/caffeinate", linger: awakeLinger}
 		go s.awake.run(context.Background())
@@ -392,7 +398,9 @@ func (s *server) ping(w http.ResponseWriter, r *http.Request) {
 }
 
 // state is what the phone polls: the window (status) and its spaces, tabs
-// and terminals (ls), in one request.
+// and terminals (ls), in one request; with the herdr CLI running, its
+// session too (herdr: session.snapshot's snapshot). Either one alone is
+// enough: it fails only when neither the Herdr app nor the herdr CLI answers.
 func (s *server) state(w http.ResponseWriter, r *http.Request) {
 	machines := make(chan json.RawMessage, 1) // hc's machines, meanwhile; left out when hc can't say
 	go func() {
@@ -401,17 +409,32 @@ func (s *server) state(w http.ResponseWriter, r *http.Request) {
 		raw, _ := s.machinesRaw(ctx)
 		machines <- raw
 	}()
-	status, err := run(r.Context(), 10*time.Second, s.herdr, "status")
-	if err != nil {
-		writeErr(w, http.StatusBadGateway, fmt.Errorf("herdr-app status: %w (is the Herdr window open?)", err))
+	herdrSnap := make(chan json.RawMessage, 1) // the herdr CLI's session; left out when it doesn't answer
+	go func() {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		raw, _ := s.herdrSnapshotRaw(ctx)
+		herdrSnap <- raw
+	}()
+	reply := map[string]json.RawMessage{}
+	appErr := func() error {
+		status, err := run(r.Context(), 10*time.Second, s.herdr, "status")
+		if err != nil {
+			return fmt.Errorf("herdr-app status: %w (is the Herdr window open?)", err)
+		}
+		ls, err := run(r.Context(), 10*time.Second, s.herdr, "ls")
+		if err != nil {
+			return fmt.Errorf("herdr-app ls: %w", err)
+		}
+		reply["status"], reply["ls"] = status, ls
+		return nil
+	}()
+	if h := <-herdrSnap; h != nil {
+		reply["herdr"] = h
+	} else if appErr != nil {
+		writeErr(w, http.StatusBadGateway, appErr)
 		return
 	}
-	ls, err := run(r.Context(), 10*time.Second, s.herdr, "ls")
-	if err != nil {
-		writeErr(w, http.StatusBadGateway, fmt.Errorf("herdr-app ls: %w", err))
-		return
-	}
-	reply := map[string]json.RawMessage{"status": status, "ls": ls}
 	if m := <-machines; m != nil {
 		reply["machines"] = m
 	}
@@ -474,7 +497,13 @@ func (s *server) do(w http.ResponseWriter, r *http.Request) {
 	writeRaw(w, out)
 }
 
-func validTerminal(t string) bool { return terminalRe.MatchString(t) }
+// validTerminal: hc's "t12" or "machine/t12", or a herdr CLI pane "herdr:wF:p2".
+func validTerminal(t string) bool {
+	if _, ok := herdrPane(t); ok {
+		return true
+	}
+	return terminalRe.MatchString(t)
+}
 
 // read returns a terminal's screen and some history.
 func (s *server) read(w http.ResponseWriter, r *http.Request) {
@@ -487,7 +516,7 @@ func (s *server) read(w http.ResponseWriter, r *http.Request) {
 	if lines < 0 || lines > 2000 {
 		lines = 200
 	}
-	out, err := run(r.Context(), 10*time.Second, s.hc, "read", "--json", "--lines", strconv.Itoa(lines), t)
+	out, err := s.backend(t).read(r.Context(), t, lines)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
@@ -506,12 +535,7 @@ func (s *server) send(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, errors.New("need {terminal, text}"))
 		return
 	}
-	args := []string{"send", "--json"}
-	if req.Force {
-		args = append(args, "--force")
-	}
-	args = append(args, req.Terminal, req.Text)
-	out, err := run(r.Context(), 40*time.Second, s.hc, args...)
+	out, err := s.backend(req.Terminal).send(r.Context(), req.Terminal, req.Text, req.Force)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
@@ -535,7 +559,11 @@ func (s *server) keys(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	out, err := run(r.Context(), 10*time.Second, s.hc, append([]string{"keys", "--json", req.Terminal}, req.Keys...)...)
+	out, err := s.backend(req.Terminal).keys(r.Context(), req.Terminal, req.Keys, 10*time.Second)
+	if herdrCode(err) == "invalid_key" {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
@@ -551,7 +579,7 @@ func (s *server) interrupt(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, errors.New("need {terminal}"))
 		return
 	}
-	out, err := run(r.Context(), 15*time.Second, s.hc, "interrupt", "--json", req.Terminal)
+	out, err := s.backend(req.Terminal).interrupt(r.Context(), req.Terminal)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return

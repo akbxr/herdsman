@@ -253,14 +253,18 @@ func taskLaunch(a AgentInfo, prompt string, flags ...string) (argv []string, del
 // "prompt": "…", "model": "claude-sonnet-5-5", "thinking": "high",
 // "machine": "box"}; model and thinking are optional (the agent's own
 // default), machine too (this Mac; else cwd is a folder there).
+// "backend": "herdr" starts it in a new tab of the herdr CLI instead of the
+// Herdr window: in the focused workspace, or "workspace": "wF".
 func (s *server) task(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Cwd      string `json:"cwd"`
-		Agent    string `json:"agent"`
-		Prompt   string `json:"prompt"`
-		Model    string `json:"model"`
-		Thinking string `json:"thinking"`
-		Machine  string `json:"machine"`
+		Cwd       string `json:"cwd"`
+		Agent     string `json:"agent"`
+		Prompt    string `json:"prompt"`
+		Model     string `json:"model"`
+		Thinking  string `json:"thinking"`
+		Machine   string `json:"machine"`
+		Backend   string `json:"backend"`
+		Workspace string `json:"workspace"`
 	}
 	if err := decode(r, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, errors.New("need {cwd, agent, prompt}"))
@@ -268,6 +272,23 @@ func (s *server) task(w http.ResponseWriter, r *http.Request) {
 	}
 	if !validMachine(req.Machine) {
 		writeErr(w, http.StatusBadRequest, errors.New("bad machine name"))
+		return
+	}
+	cli := false
+	switch req.Backend {
+	case "", "app", "herdr-app":
+	case "herdr":
+		cli = true
+	default:
+		writeErr(w, http.StatusBadRequest, errors.New(`backend is "herdr" (the herdr CLI) or left out (the Herdr app)`))
+		return
+	}
+	if cli && req.Machine != "" {
+		writeErr(w, http.StatusBadRequest, errors.New("the herdr CLI runs tasks on this Mac only"))
+		return
+	}
+	if req.Workspace != "" && (!cli || !herdrWorkspaceRe.MatchString(req.Workspace)) {
+		writeErr(w, http.StatusBadRequest, errors.New(`workspace: a herdr CLI workspace id ("wF"), with "backend": "herdr"`))
 		return
 	}
 	h := s.on(req.Machine)
@@ -316,7 +337,13 @@ func (s *server) task(w http.ResponseWriter, r *http.Request) {
 	}
 
 	argv, delivery := taskLaunch(*agent, prompt, flags...)
-	made, code, err := s.openTabOn(r.Context(), req.Machine, cwd, argv)
+	var made tabMade
+	var code int
+	if cli {
+		made, code, err = s.openHerdrTab(r.Context(), req.Workspace, cwd, argv)
+	} else {
+		made, code, err = s.openTabOn(r.Context(), req.Machine, cwd, argv)
+	}
 	if err != nil {
 		writeErr(w, code, err)
 		return
@@ -458,25 +485,14 @@ func (s *server) typeWhenReady(ctx context.Context, terminal, text string) error
 			return errors.New("the program didn't get ready in time; the task was not typed")
 		case <-time.After(taskPoll):
 		}
-		out, err := run(ctx, 5*time.Second, s.hc, "get", "--json", terminal)
+		p, err := s.readyProbe(ctx, terminal)
+		if p.ended {
+			return errors.New("the terminal ended before the task was typed")
+		}
 		if err != nil {
 			continue
 		}
-		var g struct {
-			State      string
-			Foreground *struct{ Name string }
-			Status     *struct{ State string }
-		}
-		if json.Unmarshal(out, &g) != nil {
-			continue
-		}
-		if g.State != "" && g.State != "live" {
-			return errors.New("the terminal ended before the task was typed")
-		}
-		name := ""
-		if g.Foreground != nil {
-			name = strings.TrimPrefix(filepath.Base(g.Foreground.Name), "-")
-		}
+		name := p.name
 		if name == "" || shells[name] {
 			if !started.IsZero() {
 				return errors.New("the program quit before the task was typed")
@@ -487,24 +503,134 @@ func (s *server) typeWhenReady(ctx context.Context, terminal, text string) error
 		if started.IsZero() {
 			started = now
 		}
-		state := ""
-		if g.Status != nil {
-			state = g.Status.State
-		}
+		state := p.state
 		ready := state == "idle" || state == "done"
 		if !ready && state == "" { // it says nothing: wait for its screen to settle
-			rd, err := run(ctx, 5*time.Second, s.hc, "read", "--json", terminal)
+			rd, err := s.backend(terminal).screen(ctx, terminal, 5*time.Second)
 			if err != nil {
 				continue
 			}
-			if string(rd) != screen {
-				screen, sameSince = string(rd), now
+			if rd != screen {
+				screen, sameSince = rd, now
 			}
 			ready = now.Sub(sameSince) >= taskSettle && now.Sub(started) >= taskWarmup
 		}
 		if ready {
-			_, err := run(ctx, 40*time.Second, s.hc, "send", "--json", terminal, text)
+			_, err := s.backend(terminal).send(ctx, terminal, text, false)
 			return err
 		}
 	}
+}
+
+// probe is what typeWhenReady looks at: has the terminal ended, the
+// program in front (its name, as a shell's is: "zsh"), the state it reports.
+type probe struct {
+	ended       bool
+	name, state string
+}
+
+func (s *server) readyProbe(ctx context.Context, terminal string) (probe, error) {
+	if _, ok := herdrPane(terminal); ok {
+		now, err := s.terminalNow(ctx, terminal)
+		if err != nil {
+			return probe{ended: herdrCode(err) == "pane_not_found"}, err
+		}
+		return probe{name: strings.TrimPrefix(filepath.Base(now.fg.Name), "-"), state: now.state}, nil
+	}
+	out, err := run(ctx, 5*time.Second, s.hc, "get", "--json", terminal)
+	if err != nil {
+		return probe{}, err
+	}
+	var g struct {
+		State      string
+		Foreground *struct{ Name string }
+		Status     *struct{ State string }
+	}
+	if err := json.Unmarshal(out, &g); err != nil {
+		return probe{}, err
+	}
+	var p probe
+	p.ended = g.State != "" && g.State != "live"
+	if g.Foreground != nil {
+		p.name = strings.TrimPrefix(filepath.Base(g.Foreground.Name), "-")
+	}
+	if g.Status != nil {
+		p.state = g.Status.State
+	}
+	return p, nil
+}
+
+// openHerdrTab opens a tab of the herdr CLI in folder (in workspace, else
+// the focused one, else a new workspace) and types argv into its shell.
+// agent.start isn't used: it knows herdr's agent kinds only (no tego),
+// starts their canonical executable rather than programs.json's argv, and
+// waits up to 30 s for the agent before answering.
+func (s *server) openHerdrTab(ctx context.Context, workspace, folder string, argv []string) (tabMade, int, error) {
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	fail := func(err error) (tabMade, int, error) {
+		if errors.Is(err, errHerdrOff) {
+			return tabMade{}, http.StatusServiceUnavailable, err
+		}
+		return tabMade{}, herdrStatus(err), err
+	}
+	if workspace == "" {
+		snap, err := s.herdrSnapshot(ctx)
+		if err != nil {
+			return fail(err)
+		}
+		workspace = str(snap.FocusedWorkspaceID)
+		if workspace == "" && len(snap.Workspaces) > 0 {
+			workspace = snap.Workspaces[0].WorkspaceID
+		}
+	}
+	var made struct {
+		Workspace struct {
+			WorkspaceID string `json:"workspace_id"`
+		} `json:"workspace"`
+		Tab struct {
+			TabID       string `json:"tab_id"`
+			WorkspaceID string `json:"workspace_id"`
+		} `json:"tab"`
+		RootPane herdrPaneInfo `json:"root_pane"`
+	}
+	var err error
+	if workspace == "" {
+		err = s.herdrDo(ctx, "workspace.create", map[string]any{"cwd": folder, "focus": false}, &made)
+	} else {
+		err = s.herdrDo(ctx, "tab.create", map[string]any{"workspace_id": workspace, "cwd": folder, "focus": false}, &made)
+	}
+	if err != nil {
+		return fail(err)
+	}
+	pane := made.RootPane.PaneID
+	if !herdrPaneIDRe.MatchString(pane) {
+		return tabMade{}, http.StatusBadGateway, errors.New("herdr made the tab but didn't name its pane")
+	}
+	space := made.Tab.WorkspaceID
+	if space == "" {
+		space = made.Workspace.WorkspaceID
+	}
+	if len(argv) > 0 {
+		cmd := shellJoin(argv)
+		if err := s.herdrDo(ctx, "pane.send_input", map[string]any{"pane_id": pane, "text": cmd, "keys": []string{"enter"}}, nil); err != nil {
+			return fail(err)
+		}
+	}
+	return tabMade{Space: space, Tab: made.Tab.TabID, Terminal: herdrAddr(pane)}, 0, nil
+}
+
+// shellJoin: argv as one command line for a POSIX shell.
+func shellJoin(argv []string) string {
+	parts := make([]string, len(argv))
+	for i, a := range argv {
+		if a != "" && strings.IndexFunc(a, func(r rune) bool {
+			return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("-_./=:,+@%", r))
+		}) < 0 {
+			parts[i] = a
+			continue
+		}
+		parts[i] = "'" + strings.ReplaceAll(a, "'", `'\''`) + "'"
+	}
+	return strings.Join(parts, " ")
 }

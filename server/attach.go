@@ -31,6 +31,9 @@ package main
 //                   to the display attach's queries (colors, device attributes)
 //   server → phone  {"type":"size","cols":165,"rows":36,"repaint":bool}
 //                   {"type":"exit","reason":"…"}
+//
+// A herdr CLI pane ("herdr:wF:p2") has no byte stream: herdrattach.go sends
+// repaints of its screen in the same frames.
 
 import (
 	"context"
@@ -117,6 +120,10 @@ func (s *server) attach(w http.ResponseWriter, r *http.Request) {
 	terminal := q.Get("terminal")
 	if !validTerminal(terminal) {
 		writeErr(w, http.StatusBadRequest, errors.New("bad terminal"))
+		return
+	}
+	if pane, ok := herdrPane(terminal); ok {
+		s.attachHerdr(w, r, terminal, pane) // a repaint stream (herdrattach.go)
 		return
 	}
 	size, live, err := s.coreSize(r.Context(), terminal)

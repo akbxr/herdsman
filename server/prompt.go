@@ -27,7 +27,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"regexp"
@@ -168,15 +167,11 @@ func isInputLine(t string) bool {
 
 // screenPrompt reads a terminal's screen and the menu on it.
 func (s *server) screenPrompt(ctx context.Context, terminal string) (*prompt, error) {
-	out, err := run(ctx, 5*time.Second, s.hc, "read", "--json", terminal)
+	text, err := s.backend(terminal).screen(ctx, terminal, 5*time.Second)
 	if err != nil {
 		return nil, err
 	}
-	var r struct{ Text string }
-	if err := json.Unmarshal(out, &r); err != nil {
-		return nil, err
-	}
-	return parsePrompt(r.Text), nil
+	return parsePrompt(text), nil
 }
 
 // GET /api/prompt?terminal=t12: the menu a waiting agent shows, if any.

@@ -2,10 +2,10 @@ package main
 
 // Attachments from the phone: the bytes arrive here, and `hc put` places
 // them beside the terminal (on its machine, under herdr-core's files), so the
-// agent there can open them by path.
+// agent there can open them by path. A herdr CLI pane's file goes under
+// ~/Library/Application Support/herdr-remote/uploads/<pane>/ (backend.go).
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -70,17 +70,13 @@ func (s *server) upload(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("the upload didn't finish: %w", err))
 		return
 	}
-	out, err := run(r.Context(), 10*time.Minute, s.hc, "put", "--json", terminal, path)
-	if err != nil {
-		writeErr(w, http.StatusBadGateway, fmt.Errorf("hc put: %w", err))
-		return
-	}
 	var put struct {
 		Path  string `json:"path"`
 		Bytes int64  `json:"bytes"`
 	}
-	if json.Unmarshal(out, &put) != nil || put.Path == "" {
-		writeErr(w, http.StatusBadGateway, errors.New("hc put didn't say where the file landed"))
+	put.Path, put.Bytes, err = s.backend(terminal).put(r.Context(), terminal, path)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
 	if put.Bytes == 0 {
