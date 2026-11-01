@@ -27,7 +27,7 @@ enum class State(val word: String) {
 }
 
 data class Agent(
-    val terminal: String,   // t12, or machine/t12
+    val terminal: String,   // t12, machine/t12, or herdr:wF:p2 (a herdr CLI pane)
     val app: String,        // tego, claude-code, … or "shell"
     val label: String?,     // its name in Herdr, if set
     val state: State,
@@ -38,14 +38,23 @@ data class Agent(
     val pane: String = "", // its pane in Herdr's layout,
     val spaceId: String = "",  // to show its tab on the Mac when another space shows
     val machine: String = "",  // the machine it runs on ("": this Mac)
+    val source: String = "app",  // app: the Herdr app's window; herdr: the herdr CLI
 ) {
     val title get() = label ?: app
-    /** The number stamped on the tag: the address without its machine. */
-    val tagNumber get() = terminal.substringAfterLast('/')
+    /** The number stamped on the tag: the address without its machine (a herdr pane's: p2). */
+    val tagNumber get() = if (isHerdrPane(terminal)) terminal.substringAfterLast(':') else terminal.substringAfterLast('/')
+    /** A pane of the herdr CLI, driven through POST /api/herdr (Control.kt). */
+    val cli get() = source == "herdr" || isHerdrPane(terminal)
 }
 
-/** The machine in a terminal's address: "vps" for "vps/t7", "" for "t7" (this Mac). */
-fun machineOf(terminal: String): String = terminal.substringBeforeLast('/', "")
+/** "herdr:wF:p2": a pane of the herdr CLI, not a terminal of the Herdr app. */
+fun isHerdrPane(terminal: String): Boolean = terminal.startsWith("herdr:")
+
+/** The machine in a terminal's address: "vps" for "vps/t7", "" for "t7" (this Mac) and herdr CLI panes. */
+fun machineOf(terminal: String): String = if (isHerdrPane(terminal)) "" else terminal.substringBeforeLast('/', "")
+
+/** A workspace of the herdr CLI: a new task can start in it (NewTask.kt). */
+data class Workspace(val id: String, val label: String, val focused: Boolean = false)
 
 /** A tab on the Mac, in its space; [active]: the tab its space shows. */
 data class Tab(
@@ -89,13 +98,22 @@ data class Machine(
 data class Herd(
     val layout: String,
     val agents: List<Agent>,
-    val tabs: List<Tab>,
+    val tabs: List<Tab>,  // the Herdr app's only (the Screen tab shows them)
     val machines: List<Machine> = emptyList(),  // the other machines added in Herdr
+    val app: Boolean = true,  // the Herdr app runs (the Mac sent its status or spaces)
+    val cli: Boolean = false,  // the herdr CLI runs (the Mac sent its snapshot)
+    val workspaces: List<Workspace> = emptyList(),  // the herdr CLI's, focused first
 ) {
+    val appAgents get() = agents.filter { !it.cli }
+    val cliAgents get() = agents.filter { it.cli }
+
     companion object {
-        /** Reads GET /api/state: the Herdr window's spaces, tabs and terminals, and its machines. */
+        /**
+         * Reads GET /api/state: the Herdr window's spaces, tabs and terminals,
+         * its machines, and the herdr CLI's panes. Either may be missing.
+         */
         fun from(root: JSONObject): Herd {
-            val layout = root.optJSONObject("status")?.optString("layout") ?: ""
+            val layout = root.optJSONObject("status")?.str("layout") ?: ""
             val agents = mutableListOf<Agent>()
             val tabs = mutableListOf<Tab>()
             val spaces = root.optJSONObject("ls")?.optJSONArray("spaces") ?: JSONArray()
@@ -131,7 +149,67 @@ data class Herd(
             }
             val list = root.optJSONArray("machines") ?: JSONArray()
             val machines = (0 until list.length()).map { Machine.from(list.getJSONObject(it)) }.filter { !it.local && it.name.isNotEmpty() }
-            return Herd(layout, agents, tabs, machines)
+            val app = root.optJSONObject("status") != null || root.optJSONObject("ls") != null
+            val cli = root.optJSONObject("herdr")
+            val workspaces = cli?.let { readHerdr(it, agents) }.orEmpty()
+            return Herd(layout, agents, tabs, machines, app, cli != null, workspaces)
+        }
+
+        /**
+         * herdr's session.snapshot: each pane becomes an [Agent] at
+         * herdr:<pane_id>, its program from [agents] (none: a shell). Adds
+         * them to [into] by workspace, tab and pane; returns the workspaces.
+         */
+        private fun readHerdr(snap: JSONObject, into: MutableList<Agent>): List<Workspace> {
+            fun objects(key: String) = snap.optJSONArray(key)?.let { a -> (0 until a.length()).mapNotNull { a.optJSONObject(it) } }.orEmpty()
+            val focusedWs = snap.str("focused_workspace_id")
+            val focusedTab = snap.str("focused_tab_id")
+            val spaces = objects("workspaces").associateBy { it.str("workspace_id") }
+            val tabs = objects("tabs").associateBy { it.str("tab_id") }
+            val programs = objects("agents").associateBy { it.str("pane_id") }
+            fun wsFocused(id: String) = id.isNotEmpty() && (id == focusedWs || spaces[id]?.optBoolean("focused") == true)
+            fun tabFocused(id: String) = id.isNotEmpty() && (id == focusedTab || tabs[id]?.optBoolean("focused") == true)
+            fun name(o: JSONObject?, id: String) = o?.str("label")?.takeIf { it.isNotBlank() }
+                ?: o?.optInt("number", 0)?.takeIf { it > 0 }?.toString() ?: id.substringAfterLast(':')
+            // Workspaces and tabs in herdr's order: by number, then as listed.
+            val wsOrder = spaces.keys.withIndex().associate { (i, id) -> id to (spaces[id]?.optInt("number", 0) ?: 0) * 10_000 + i }
+            val tabOrder = tabs.keys.withIndex().associate { (i, id) -> id to (tabs[id]?.optInt("number", 0) ?: 0) * 10_000 + i }
+            objects("panes").withIndex()
+                .sortedWith(compareBy({ wsOrder[it.value.str("workspace_id")] ?: Int.MAX_VALUE }, { tabOrder[it.value.str("tab_id")] ?: Int.MAX_VALUE }, { it.index }))
+                .forEach { (_, p) ->
+                    val paneId = p.str("pane_id").ifEmpty { return@forEach }
+                    val program = programs[paneId]
+                    val tabId = p.str("tab_id").ifEmpty { program?.str("tab_id").orEmpty() }
+                    val wsId = p.str("workspace_id").ifEmpty { program?.str("workspace_id").orEmpty() }
+                    val app = program?.str("agent")?.takeIf { it.isNotBlank() } ?: "shell"
+                    val status = p.str("agent_status").ifEmpty { program?.str("agent_status").orEmpty() }
+                    into += Agent(
+                        terminal = "herdr:$paneId",
+                        app = app,
+                        label = herdrTitle(p.str("terminal_title").ifEmpty { program?.str("terminal_title").orEmpty() }, app),
+                        state = State.of(status),  // unknown: idle, like a terminal that reports nothing
+                        tabId = tabId,
+                        tabName = name(tabs[tabId], tabId),
+                        tabActive = tabFocused(tabId) && wsFocused(wsId),
+                        spaceName = name(spaces[wsId], wsId),
+                        pane = paneId,
+                        spaceId = wsId,
+                        source = "herdr",
+                    )
+                }
+            return spaces.keys.sortedWith(compareBy({ !wsFocused(it) }, { wsOrder[it] })).map { Workspace(it, name(spaces[it], it), wsFocused(it)) }
+        }
+
+        /**
+         * A pane's terminal title as its name, when it says more than the
+         * program: spinners and marks before it go ("✳ Fix login" is "Fix login").
+         */
+        internal fun herdrTitle(raw: String, app: String): String? {
+            val t = raw.trim().dropWhile { !it.isLetterOrDigit() && it !in "~/." }.trim()
+            if (t.isEmpty()) return null
+            val plain = t.lowercase()
+            if (plain == app.lowercase() || plain == agentTitle(app).lowercase()) return null
+            return t
         }
     }
 }
@@ -345,11 +423,19 @@ class Api(val base: String, val token: String) {
     /**
      * Opens a tab in [cwd] running [agent] on [prompt], with a [model] and
      * [thinking] level (null: the agent's own default), on [machine] ("":
-     * this Mac); returns its terminal (vps/t7 on another machine).
+     * this Mac); returns its terminal (vps/t7 on another machine). In the
+     * herdr CLI ([cli]) instead of the Herdr app: in its [workspace] ("": the
+     * one herdr picks), and the terminal is herdr:<pane>.
      */
-    suspend fun startTask(cwd: String, agent: String, prompt: String, model: String? = null, thinking: String? = null, machine: String = ""): String {
+    suspend fun startTask(
+        cwd: String, agent: String, prompt: String, model: String? = null, thinking: String? = null, machine: String = "",
+        cli: Boolean = false, workspace: String = "",
+    ): String {
         val body = JSONObject().put("cwd", cwd).put("agent", agent).put("prompt", prompt)
-        if (machine.isNotEmpty()) body.put("machine", machine)
+        if (cli) {
+            body.put("backend", "herdr")
+            if (workspace.isNotEmpty()) body.put("workspace", workspace)
+        } else if (machine.isNotEmpty()) body.put("machine", machine)
         if (model != null) body.put("model", model)
         if (thinking != null) body.put("thinking", thinking)
         return call("/api/task", body, timeoutMs = 30_000)
@@ -451,6 +537,28 @@ class Api(val base: String, val token: String) {
         if (spaceId.isNotEmpty()) command("space.select", JSONObject().put("id", spaceId))
         command("tab.select", JSONObject().put("id", tabId))
     }
+
+    // The herdr CLI's own methods, with herdr's parameter names (tab_id,
+    // pane_id, workspace_id, label, cwd, direction). Closing needs confirmed.
+    suspend fun herdr(method: String, params: JSONObject = JSONObject(), confirmed: Boolean = false): JSONObject {
+        val body = JSONObject().put("method", method).put("params", params)
+        if (confirmed) body.put("confirmed", true)
+        return call("/api/herdr", body, timeoutMs = 20_000)
+    }
+
+    /** Shows a pane's tab in herdr, its workspace first. */
+    suspend fun herdrShow(tabId: String, workspaceId: String) {
+        if (workspaceId.isNotEmpty()) herdr("workspace.focus", JSONObject().put("workspace_id", workspaceId))
+        herdr("tab.focus", JSONObject().put("tab_id", tabId))
+    }
+    suspend fun herdrSplit(paneId: String, direction: String) =
+        herdr("pane.split", JSONObject().put("pane_id", paneId).put("direction", direction))
+    suspend fun herdrRenameTab(tabId: String, label: String) = herdr("tab.rename", JSONObject().put("tab_id", tabId).put("label", label))
+    suspend fun herdrClosePane(paneId: String) = herdr("pane.close", JSONObject().put("pane_id", paneId), confirmed = true)
+    suspend fun herdrCloseTab(tabId: String) = herdr("tab.close", JSONObject().put("tab_id", tabId), confirmed = true)
+    /** A new tab with a shell in [workspaceId] ("": herdr's focused one). */
+    suspend fun herdrNewTab(workspaceId: String = "") =
+        herdr("tab.create", JSONObject().apply { if (workspaceId.isNotEmpty()) put("workspace_id", workspaceId) })
 
     /**
      * Sends a file from the phone; herdr-core places it beside the terminal.

@@ -82,12 +82,16 @@ fun typedPath(filter: String, home: String): String? {
 }
 
 /**
- * A new task: pick a machine (with others added), a folder, an agent, say
+ * A new task: pick where (the Herdr app or the herdr CLI, when both run), a
+ * machine (with others added) or a herdr workspace, a folder, an agent, say
  * what to do. The Mac opens a tab there running the agent with the task;
- * [onStarted] gets its terminal.
+ * [onStarted] gets its terminal. [app], [cli]: which of the two run.
  */
 @Composable
-fun NewTaskScreen(api: Api, host: String, machines: List<Machine> = emptyList(), onBack: () -> Unit, onStarted: (String) -> Unit) {
+fun NewTaskScreen(
+    api: Api, host: String, machines: List<Machine> = emptyList(), onBack: () -> Unit, onStarted: (String) -> Unit,
+    app: Boolean = true, cli: Boolean = false, workspaces: List<Workspace> = emptyList(),
+) {
     val context = LocalContext.current
     val pairing = remember { Pairing(context) }
     val scope = rememberCoroutineScope()
@@ -115,13 +119,21 @@ fun NewTaskScreen(api: Api, host: String, machines: List<Machine> = emptyList(),
     var resumeProblem by remember { mutableStateOf<String?>(null) }
     var sessionsNote by remember { mutableStateOf("") }
     // Where it runs: "" this Mac, or a machine added in Herdr (gone: this Mac again).
+    // In the herdr CLI: when it alone runs, or picked (the Herdr app is the default).
+    var pickedCli by rememberSaveable { mutableStateOf(false) }
+    val inCli = cli && (!app || pickedCli)
     var pickedMachine by rememberSaveable { mutableStateOf("") }
-    val machine = pickedMachine.takeIf { m -> m.isEmpty() || machines.any { it.name == m } } ?: ""
+    val machine = if (inCli) "" else pickedMachine.takeIf { m -> m.isEmpty() || machines.any { it.name == m } } ?: ""
+    // herdr's workspace: the focused one (first) unless picked.
+    var pickedWorkspace by rememberSaveable { mutableStateOf("") }
+    val workspace = workspaces.firstOrNull { it.id == pickedWorkspace }?.id ?: workspaces.firstOrNull()?.id ?: ""
 
-    LaunchedEffect(api, machine, picked, attempt) {
+    LaunchedEffect(api, machine, picked, attempt, inCli) {
         sessions = null
         sessionsNote = ""
         resumeProblem = null
+        // Resuming opens a tab in the Herdr app: not offered for the herdr CLI.
+        if (inCli) return@LaunchedEffect
         val cwd = picked ?: return@LaunchedEffect
         val found = runCatching { api.sessions(cwd, machine) }.getOrNull()
         sessions = found?.list.orEmpty()
@@ -178,7 +190,18 @@ fun NewTaskScreen(api: Api, host: String, machines: List<Machine> = emptyList(),
 
     NewTaskForm(
         host = host,
-        machines = machines,
+        backends = app && cli,
+        cli = inCli,
+        onCli = { c ->
+            // The herdr CLI runs on this Mac: another machine's folders go.
+            if (c && machine.isNotEmpty()) { pickedMachine = ""; folders = null; agents = null; picked = null; filter = "" }
+            pickedCli = c
+            problem = null
+        },
+        workspaces = if (inCli) workspaces else emptyList(),
+        workspace = workspace,
+        onWorkspace = { pickedWorkspace = it },
+        machines = if (inCli) emptyList() else machines,
         machine = machine,
         onMachine = { m ->
             if (m != machine) {
@@ -231,7 +254,7 @@ fun NewTaskScreen(api: Api, host: String, machines: List<Machine> = emptyList(),
             problem = null
             scope.launch {
                 val withModel = takesModel(id)
-                runCatching { api.startTask(cwd, id, prompt.trim(), model.takeIf { withModel }, thinking.takeIf { withModel }, machine) }
+                runCatching { api.startTask(cwd, id, prompt.trim(), model.takeIf { withModel }, thinking.takeIf { withModel }, machine, inCli, workspace.takeIf { inCli }.orEmpty()) }
                     .onSuccess { terminal -> pairing.lastAgent = id; onStarted(terminal) }
                     .onFailure { problem = it.advice() }
                 busy = false
@@ -245,6 +268,12 @@ fun NewTaskScreen(api: Api, host: String, machines: List<Machine> = emptyList(),
 @Composable
 fun NewTaskForm(
     host: String,
+    backends: Boolean = false,  // the Herdr app and the herdr CLI both run: a chooser
+    cli: Boolean = false,       // it starts in the herdr CLI
+    onCli: (Boolean) -> Unit = {},
+    workspaces: List<Workspace> = emptyList(),  // herdr's, for the herdr CLI; one or none: no chooser
+    workspace: String = "",
+    onWorkspace: (String) -> Unit = {},
     machines: List<Machine> = emptyList(),  // the others added in Herdr; none: no chooser
     machine: String = "",
     onMachine: (String) -> Unit = {},
@@ -285,7 +314,7 @@ fun NewTaskForm(
                     contentAlignment = Alignment.Center,
                 ) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to the herd", tint = Ink.text) }
                 Text(
-                    "A new tab on ${host.removeSuffix(".local").ifBlank { "your Mac" }}",
+                    (if (cli) "A new tab in herdr on " else "A new tab on ") + host.removeSuffix(".local").ifBlank { "your Mac" },
                     style = Type.small, color = Ink.dust, maxLines = 1, overflow = TextOverflow.Ellipsis,
                 )
             }
@@ -293,9 +322,24 @@ fun NewTaskForm(
                 Spacer(Modifier.height(4.dp))
                 Text("New task", style = Type.headline, color = Ink.text)
                 Spacer(Modifier.height(6.dp))
-                val where = machines.firstOrNull { it.name == machine }?.label ?: "the Mac"
-                Text("Pick a folder and an agent, say what to do. It starts on $where and opens here.", style = Type.body, color = Ink.dust)
+                val where = if (cli) "in herdr" else "on " + (machines.firstOrNull { it.name == machine }?.label ?: "the Mac")
+                Text("Pick a folder and an agent, say what to do. It starts $where and opens here.", style = Type.body, color = Ink.dust)
                 Spacer(Modifier.height(20.dp))
+                if (backends) {
+                    StepLabel("Run in")
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        AgentChip("Herdr app", selected = !cli) { onCli(false) }
+                        AgentChip("herdr CLI", selected = cli) { onCli(true) }
+                    }
+                    Spacer(Modifier.height(22.dp))
+                }
+                if (cli && workspaces.size > 1) {
+                    StepLabel("Workspace")
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        workspaces.forEach { w -> AgentChip(w.label, selected = w.id == workspace) { onWorkspace(w.id) } }
+                    }
+                    Spacer(Modifier.height(22.dp))
+                }
                 if (machines.isNotEmpty()) {
                     StepLabel("Machine")
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {

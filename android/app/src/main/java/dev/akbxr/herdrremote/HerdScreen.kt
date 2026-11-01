@@ -209,8 +209,12 @@ fun HerdScreen(
     onMachines: () -> Unit = {},  // the machines sheet: add, reconnect, remove
 ) {
     val agents = herd?.agents.orEmpty().sortedWith(compareBy({ order.indexOf(it.state) }, { it.tabName }))
-    // Terminals on other machines, or a machine added: grouped by machine.
-    val groups = herd?.let { machineGroups(it, agents) }.orEmpty()
+    val appAgents = agents.filter { !it.cli }
+    val cliAgents = agents.filter { it.cli }
+    // The Herdr app's terminals on other machines, or a machine added: grouped by machine.
+    val groups = herd?.let { machineGroups(it, appAgents) }.orEmpty()
+    // Panes of the herdr CLI beside the Herdr app's: a section each.
+    val sections = cliAgents.isNotEmpty() && (appAgents.isNotEmpty() || groups.isNotEmpty())
     val needs = agents.count { it.state == State.NeedsYou }
     val working = agents.count { it.state == State.Working }
 
@@ -263,13 +267,26 @@ fun HerdScreen(
                 Spacer(Modifier.height(14.dp))
             }
         }
+        if (sections) item(key = "b:app") {
+            val spaces = appAgents.map { it.spaceId }.distinct().size
+            BackendHeader("Herdr app", if (spaces > 0) plural(spaces, "space") else null, appAgents.size)
+        }
         if (groups.isEmpty()) {
-            items(agents, key = { it.terminal }) { agent ->
+            items(if (sections) appAgents else agents, key = { it.terminal }) { agent ->
                 AgentRow(agent, onClick = { onOpen(agent) }, onLongClick = { onActions(agent) })
             }
         } else groups.forEach { group ->
             item(key = "m:" + group.name) { MachineHeader(group, onClick = onMachines) }
             items(group.agents, key = { it.terminal }) { agent ->
+                AgentRow(agent, onClick = { onOpen(agent) }, onLongClick = { onActions(agent) })
+            }
+        }
+        if (sections) {
+            item(key = "b:cli") {
+                val spaces = herd?.workspaces?.size?.takeIf { it > 0 } ?: cliAgents.map { it.spaceId }.distinct().size
+                BackendHeader("herdr CLI", plural(spaces, "workspace"), cliAgents.size)
+            }
+            items(cliAgents, key = { it.terminal }) { agent ->
                 AgentRow(agent, onClick = { onOpen(agent) }, onLongClick = { onActions(agent) })
             }
         }
@@ -303,13 +320,40 @@ private fun AgentRow(agent: Agent, onClick: () -> Unit, onLongClick: () -> Unit)
                 buildAnnotatedString {
                     withStyle(SpanStyle(color = if (agent.state == State.Idle) Ink.dust else agent.state.tagColor())) { append(agent.state.word) }
                     withStyle(SpanStyle(color = Ink.dust)) {
-                        append("  ·  Tab ${agent.tabName}")
+                        // A herdr CLI pane: its workspace too, "api / Tab 2".
+                        val tab = if (agent.tabName.all(Char::isDigit)) "Tab ${agent.tabName}" else agent.tabName
+                        append(if (agent.cli) "  ·  ${agent.spaceName} / $tab" else "  ·  Tab ${agent.tabName}")
                         if (agent.tabActive) append(", on screen")
                     }
                 },
                 style = Type.small, maxLines = 1, overflow = TextOverflow.Ellipsis,
             )
         }
+    }
+}
+
+private fun plural(n: Int, word: String) = if (n == 1) "1 $word" else "$n ${word}s"
+
+/**
+ * The heading of the Herdr app's terminals or the herdr CLI's panes, when
+ * both show: as a machine's ([MachineHeader]), [detail] after its name.
+ */
+@Composable
+private fun BackendHeader(label: String, detail: String?, count: Int) {
+    Row(
+        Modifier.fillMaxWidth().padding(start = 24.dp, end = 24.dp, top = 16.dp, bottom = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        MachineDot("connected")
+        Spacer(Modifier.width(9.dp))
+        Text(
+            buildAnnotatedString {
+                withStyle(SpanStyle(color = Ink.text)) { append(label) }
+                detail?.let { withStyle(SpanStyle(color = Ink.dust)) { append("  ·  $it") } }
+            },
+            style = Type.label, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
+        )
+        if (count > 0) Text(count.toString(), style = Type.small, color = Ink.dust)
     }
 }
 

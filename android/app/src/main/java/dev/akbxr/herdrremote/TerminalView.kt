@@ -114,7 +114,8 @@ class TerminalController(context: Context, private val onStatus: (TermStatus) ->
 
     private fun start(ws: String) {
         pendingUrl = null
-        js("hr.connect(${JSONObject.quote(ws)}, ${zooms.getFloat(terminal, 0f)})")
+        // A herdr CLI pane keeps herdr's size: the phone doesn't resize it.
+        js("hr.connect(${JSONObject.quote(ws)}, ${zooms.getFloat(terminal, 0f)}, ${isHerdrPane(terminal)})")
     }
 
     /** The network came back: reconnect now rather than at the next try. */
