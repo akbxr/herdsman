@@ -1,8 +1,10 @@
 package dev.akbxr.herdrremote
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -14,6 +16,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -22,10 +25,17 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -79,42 +89,107 @@ private const val SHOWN_LINES = 600   // of one file's diff, on a phone
 private val Added = Color(0xFF9ECE6A)
 private val Removed = Color(0xFFF7768E)
 
+/** A commit made from the phone: what the Changes view says after. */
+data class CommitDone(val hash: String, val subject: String, val files: Int = 0)
+
 /**
  * What the agent changed, file by file: a summary line, then each file with
  * its counts; tap one for its diff (green added, red removed, scrolling
- * sideways rather than wrapping code).
+ * sideways rather than wrapping code). [onCommit]: the bar at the bottom
+ * that opens the commit sheet; [onDiscard]: each file's menu (⋯ or a long
+ * press). [committed]: the last commit made here, until dismissed.
  */
 @Composable
-fun ChangesView(changes: Changes?, files: List<ChangedFile>, modifier: Modifier = Modifier) {
-    when {
-        changes == null -> SkeletonList(modifier)
-        !changes.repo -> Empty("This folder isn't a git repository, so there are no changes to show.", modifier)
-        files.isEmpty() -> Empty("Nothing changed since the last commit" + (if (changes.branch.isNotEmpty()) " on ${changes.branch}." else "."), modifier)
-        else -> LazyColumn(
-            modifier.fillMaxSize(),
-            contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 10.dp, bottom = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            item(key = "summary") {
-                val added = files.sumOf { it.added }
-                val deleted = files.sumOf { it.deleted }
-                Row(Modifier.padding(start = 4.dp, bottom = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        "${files.size + changes.more} ${if (files.size + changes.more == 1) "file" else "files"}" +
-                            (if (changes.branch.isNotEmpty()) " on ${changes.branch}" else ""),
-                        style = Type.label, color = Ink.text,
-                    )
-                    Spacer(Modifier.width(10.dp))
-                    Text("+$added", style = Type.label.copy(fontFamily = JetBrains), color = Added)
-                    Spacer(Modifier.width(6.dp))
-                    Text("−$deleted", style = Type.label.copy(fontFamily = JetBrains), color = Removed)
+fun ChangesView(
+    changes: Changes?,
+    files: List<ChangedFile>,
+    modifier: Modifier = Modifier,
+    committed: CommitDone? = null,
+    onDismissCommitted: () -> Unit = {},
+    onCommit: (() -> Unit)? = null,
+    onDiscard: ((ChangedFile) -> Unit)? = null,
+) {
+    Column(modifier.fillMaxSize()) {
+        committed?.let { CommittedNote(it, onDismissCommitted, Modifier.padding(start = 12.dp, end = 12.dp, top = 10.dp)) }
+        val body = Modifier.weight(1f)
+        when {
+            changes == null -> SkeletonList(body)
+            !changes.repo -> Empty("This folder isn't a git repository, so there are no changes to show.", body)
+            files.isEmpty() -> Empty("Nothing changed since the last commit" + (if (changes.branch.isNotEmpty()) " on ${changes.branch}." else "."), body)
+            else -> {
+                LazyColumn(
+                    body.fillMaxWidth(),
+                    contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 10.dp, bottom = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    item(key = "summary") {
+                        val added = files.sumOf { it.added }
+                        val deleted = files.sumOf { it.deleted }
+                        Row(Modifier.padding(start = 4.dp, bottom = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                "${files.size + changes.more} ${if (files.size + changes.more == 1) "file" else "files"}" +
+                                    (if (changes.branch.isNotEmpty()) " on ${changes.branch}" else ""),
+                                style = Type.label, color = Ink.text,
+                            )
+                            Spacer(Modifier.width(10.dp))
+                            Text("+$added", style = Type.label.copy(fontFamily = JetBrains), color = Added)
+                            Spacer(Modifier.width(6.dp))
+                            Text("−$deleted", style = Type.label.copy(fontFamily = JetBrains), color = Removed)
+                        }
+                    }
+                    items(files, key = { it.path }) { FileCard(it, onDiscard) }
+                    if (changes.more > 0) item(key = "more") {
+                        Text("${changes.more} more files not shown.", style = Type.small, color = Ink.dust, modifier = Modifier.padding(4.dp))
+                    }
                 }
-            }
-            items(files, key = { it.path }) { FileCard(it) }
-            if (changes.more > 0) item(key = "more") {
-                Text("${changes.more} more files not shown.", style = Type.small, color = Ink.dust, modifier = Modifier.padding(4.dp))
+                if (onCommit != null) CommitBar(files.size + changes.more, changes.branch, onCommit)
             }
         }
+    }
+}
+
+/** Under the list: commit what's here (the sheet picks the files). */
+@Composable
+private fun CommitBar(count: Int, branch: String, onCommit: () -> Unit) {
+    Box(Modifier.fillMaxWidth().height(1.dp).background(Ink.rule))
+    Row(
+        Modifier.fillMaxWidth().padding(start = 16.dp, end = 12.dp, top = 8.dp, bottom = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text("Ready to commit?", style = Type.label, color = Ink.text)
+            Text(
+                "Pick from $count ${if (count == 1) "file" else "files"}" + (if (branch.isNotEmpty()) " on $branch" else ""),
+                style = Type.small, color = Ink.dust, maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Spacer(Modifier.width(12.dp))
+        PrimaryButton("Commit…", onClick = onCommit)
+    }
+}
+
+/** The commit just made: its short hash and subject. */
+@Composable
+private fun CommittedNote(done: CommitDone, onDismiss: () -> Unit, modifier: Modifier = Modifier) {
+    Row(
+        modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(Ink.mint.copy(alpha = 0.12f))
+            .padding(start = 14.dp, top = 4.dp, bottom = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(6.dp).clip(RoundedCornerShape(3.dp)).background(Ink.mint))
+        Spacer(Modifier.width(10.dp))
+        Text("Committed", style = Type.label, color = Ink.text)
+        Spacer(Modifier.width(8.dp))
+        Text(done.hash, style = Type.small.copy(fontFamily = JetBrains), color = Ink.mint)
+        Spacer(Modifier.width(8.dp))
+        Text(done.subject, style = Type.small, color = Ink.text, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+        Box(
+            Modifier.size(40.dp).clip(RoundedCornerShape(10.dp)).clickable(role = Role.Button, onClick = onDismiss),
+            contentAlignment = Alignment.Center,
+        ) { Icon(Icons.Filled.Close, contentDescription = "Dismiss", tint = Ink.dust, modifier = Modifier.size(16.dp)) }
     }
 }
 
@@ -125,18 +200,38 @@ private fun Empty(text: String, modifier: Modifier) {
     }
 }
 
+/** A new file: discarding it deletes it (the server checks it is a plain file inside the repository). */
+val ChangedFile.isNew get() = status == "?" || status == "A"
+
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun FileCard(f: ChangedFile) {
+private fun FileCard(f: ChangedFile, onDiscard: ((ChangedFile) -> Unit)?) {
     var open by rememberSaveable(f.path) { mutableStateOf(false) }
+    var menu by remember { mutableStateOf(false) }
     val canOpen = f.patch.isNotEmpty()
     Column(
         Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(10.dp))
             .border(1.dp, Ink.rule, RoundedCornerShape(10.dp))
-            .then(if (canOpen) Modifier.clickable(role = Role.Button, onClickLabel = if (open) "Fold the diff" else "Show the diff") { open = !open } else Modifier),
+            .then(
+                when {
+                    onDiscard != null -> Modifier.combinedClickable(
+                        role = Role.Button,
+                        onClickLabel = if (!canOpen) null else if (open) "Fold the diff" else "Show the diff",
+                        onLongClickLabel = "Discard",
+                        onLongClick = { menu = true },
+                        onClick = { if (canOpen) open = !open },
+                    )
+                    canOpen -> Modifier.clickable(role = Role.Button, onClickLabel = if (open) "Fold the diff" else "Show the diff") { open = !open }
+                    else -> Modifier
+                },
+            ),
     ) {
-        Row(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            Modifier.padding(start = 12.dp, end = if (onDiscard != null) 2.dp else 12.dp, top = if (onDiscard != null) 5.dp else 10.dp, bottom = if (onDiscard != null) 5.dp else 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             StatusBadge(f.status)
             Spacer(Modifier.width(10.dp))
             val dir = f.path.substringBeforeLast('/', "")
@@ -150,6 +245,23 @@ private fun FileCard(f: ChangedFile) {
                 else -> {
                     if (f.added > 0) Text("+${f.added}", style = Type.small.copy(fontFamily = JetBrains), color = Added)
                     if (f.deleted > 0) Text("  −${f.deleted}", style = Type.small.copy(fontFamily = JetBrains), color = Removed)
+                }
+            }
+            if (onDiscard != null) Box {
+                Box(
+                    Modifier.size(44.dp).clip(RoundedCornerShape(10.dp)).clickable(role = Role.Button, onClickLabel = "More for ${f.path}") { menu = true },
+                    contentAlignment = Alignment.Center,
+                ) { Icon(Icons.Filled.MoreVert, contentDescription = "More for ${f.path.substringAfterLast('/')}", tint = Ink.dust, modifier = Modifier.size(18.dp)) }
+                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, modifier = Modifier.background(Ink.pen)) {
+                    DropdownMenuItem(
+                        text = {
+                            Column {
+                                Text(if (f.isNew) "Delete file" else "Discard changes", style = Type.body.copy(fontWeight = Type.label.fontWeight), color = Ink.red)
+                                Text(if (f.isNew) "It's new: gone from the Mac" else "Back to the last commit", style = Type.small, color = Ink.dust)
+                            }
+                        },
+                        onClick = { menu = false; onDiscard(f) },
+                    )
                 }
             }
         }
@@ -172,7 +284,7 @@ private fun FileCard(f: ChangedFile) {
 }
 
 @Composable
-private fun StatusBadge(status: String) {
+internal fun StatusBadge(status: String) {
     val (label, color) = when (status) {
         "M" -> "M" to Ink.blue
         "A", "?" -> "A" to Added

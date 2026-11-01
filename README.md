@@ -118,7 +118,17 @@ The phone needs Tailscale on too, signed in to the same account.
   phone) show in your bubble; tap one to see it whole and pinch to zoom.
 - **Changes**: what is uncommitted in the agent's folder (git, against the
   last commit, new files included): each file with +/− counts, tap for its
-  diff. Works for tego, Claude Code and Codex (a shell
+  diff. **Commit…** at the bottom opens a sheet: a message (subject, blank
+  line, body), every file ticked (untick what stays out, new files
+  included), and Commit, which commits exactly those files in the
+  repository with a plain `git commit` (your config, identity and hooks
+  apply; a hook's or git's error shows in the sheet as printed). **Write it
+  for me** fills the message from the files' names and statuses
+  (Conventional Commits, made on the Mac, no model); **Ask tego to commit**
+  sends the agent the request instead, when it isn't busy. Each file's ⋯
+  (or a long press) has **Discard**, after a confirm naming the file: back
+  to the last commit, or deleted when it is new (only a regular file inside
+  the repository). Works for tego, Claude Code and Codex (a shell
   has no chat and opens on its terminal). **Chat | Terminal** at the top
   switches.
 
@@ -206,6 +216,9 @@ All under `/api`, with `Authorization: Bearer <token>` (except `/pair`):
 | GET | `/image?id=&w=480` | a picture of the chat by id (an image block's bytes, or an image file named in a message), scaled to fit `w` pixels when given |
 | GET | `/prompt?terminal=t12` | the menu on the terminal's screen → `{prompt: {question, options, selected}}` or `null` |
 | GET | `/changes?terminal=t12&version=` | uncommitted git changes in the agent's folder: files with status, counts and patch |
+| POST | `/commit` | `{terminal, message, paths}`: commits exactly those changed files in the terminal's git root (`git commit --only`, new files added with `--intent-to-add` first; hooks run) → `{hash, subject, files}`; 422 with git's output when it fails, 400 for a path that isn't changed or leaves the repository |
+| GET | `/commit/suggest?terminal=t12&path=…` | a Conventional Commits message written from the changed files' names and statuses (all of them without `path`) → `{message}` |
+| POST | `/discard` | `{terminal, path}`: one changed file back to the last commit; a new file is deleted (a regular file inside the repository only) |
 | GET | `/commands?terminal=t12` | the agent's slash commands, custom commands and skills |
 | GET | `/files?terminal=t12&q=att` | files in the agent's folder, best matches first |
 | GET | `/folders` | where a new task can start: `{home, recent, projects}` |

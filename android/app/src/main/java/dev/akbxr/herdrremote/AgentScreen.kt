@@ -262,7 +262,8 @@ fun AgentScreen(api: Api, terminal: String, agent: Agent?, appScope: CoroutineSc
     // Changes: the git diff of the agent's folder (Changes.kt), while that tab shows.
     var changes by remember(terminal) { mutableStateOf<Changes?>(null) }
     var changedFiles by remember(terminal) { mutableStateOf<List<ChangedFile>>(emptyList()) }
-    LaunchedEffect(terminal, onScreen, mode == "changes") {
+    var changesTick by remember(terminal) { mutableIntStateOf(0) }  // bumped: ask again now (after a commit or discard)
+    LaunchedEffect(terminal, onScreen, mode == "changes", changesTick) {
         if (!onScreen || mode != "changes") return@LaunchedEffect
         while (true) {
             runCatching { api.changes(terminal, changes?.version.orEmpty()) }
@@ -270,6 +271,97 @@ fun AgentScreen(api: Api, terminal: String, agent: Agent?, appScope: CoroutineSc
                 .onFailure { chatProblem = it.advice(link) }
             delay(4000)
         }
+    }
+
+    // Commit and discard from the Changes tab (Commit.kt). The draft message
+    // stays when the sheet closes; files are ticked unless you untick them,
+    // new ones included.
+    var commitSheet by remember(terminal) { mutableStateOf(false) }
+    var commitMessage by rememberSaveable(terminal) { mutableStateOf("") }
+    var unpicked by remember(terminal) { mutableStateOf<Set<String>>(emptySet()) }
+    var committing by remember(terminal) { mutableStateOf(false) }
+    var commitError by remember(terminal) { mutableStateOf<String?>(null) }
+    var suggesting by remember(terminal) { mutableStateOf(false) }
+    var committed by remember(terminal) { mutableStateOf<CommitDone?>(null) }
+    var discardAsk by remember(terminal) { mutableStateOf<ChangedFile?>(null) }
+    val picked = changedFiles.map { it.path }.filter { it !in unpicked }
+    if (commitSheet) {
+        val agentName = chat?.agent?.takeIf { it.isNotEmpty() }?.let { agent?.title ?: agentTitle(it) }
+        val busyState = chat?.status?.state
+        CommitSheet(onDismiss = { if (!committing) commitSheet = false }) {
+            CommitSheetContent(
+                files = changedFiles, more = changes?.more ?: 0, branch = changes?.branch.orEmpty(),
+                picked = picked.toSet(),
+                onPick = { path, on -> unpicked = if (on) unpicked - path else unpicked + path },
+                onPickAll = { on -> unpicked = if (on) emptySet() else changedFiles.map { it.path }.toSet() },
+                message = commitMessage, onMessage = { commitMessage = it },
+                onSuggest = {
+                    suggesting = true
+                    val all = picked.size == changedFiles.size && (changes?.more ?: 0) == 0
+                    scope.launch {
+                        runCatching { api.suggestCommit(terminal, if (all) emptyList() else picked) }
+                            .onSuccess { if (it.isNotBlank()) commitMessage = it; commitError = null }
+                            .onFailure { commitError = it.advice() }
+                        suggesting = false
+                    }
+                },
+                suggesting = suggesting,
+                ask = agentName,
+                askBlocked = when (busyState) {
+                    "working" -> "$agentName is working; ask it when it's done."
+                    "blocked" -> "$agentName is waiting for you; answer it first."
+                    else -> null
+                },
+                onAsk = {
+                    val text = askToCommitText(changedFiles, picked, changes?.more ?: 0)
+                    commitSheet = false
+                    problem = null
+                    scope.launch {
+                        runCatching { api.send(terminal, text) }
+                            .onSuccess {
+                                pending += Pending(text, text, chatItems.lastOrNull { it.kind == "user" }?.id, System.currentTimeMillis())
+                                userMode = "chat"
+                            }
+                            .onFailure { problem = it.advice() }
+                    }
+                },
+                busy = committing,
+                error = commitError,
+                onCommit = {
+                    committing = true
+                    commitError = null
+                    val paths = picked
+                    scope.launch {
+                        runCatching { api.commit(terminal, commitMessage, paths) }
+                            .onSuccess {
+                                committed = it
+                                commitMessage = ""
+                                unpicked = emptySet()
+                                commitSheet = false
+                                changesTick++
+                            }
+                            .onFailure { commitError = it.advice() }
+                        committing = false
+                    }
+                },
+                onCancel = { commitSheet = false },
+            )
+        }
+    }
+    discardAsk?.let { f ->
+        DiscardDialog(
+            f,
+            onConfirm = {
+                discardAsk = null
+                problem = null
+                scope.launch {
+                    runCatching { api.discard(terminal, f.path) }
+                        .onSuccess { changesTick++ }
+                        .onFailure { problem = it.advice() }
+                }
+            },
+            onDismiss = { discardAsk = null },
+        )
     }
 
     // The terminal: attached only while it shows. In a pocket, or on the
@@ -441,7 +533,14 @@ fun AgentScreen(api: Api, terminal: String, agent: Agent?, appScope: CoroutineSc
         onEditSnippet = { editing = it },
         onAddSnippet = { editing = -1 },
         onEsc = { scope.launch { runCatching { api.keys(terminal, "esc") }.onFailure { problem = it.advice() } } },
-        changesSlot = { ChangesView(changes, changedFiles) },
+        changesSlot = {
+            ChangesView(
+                changes, changedFiles,
+                committed = committed, onDismissCommitted = { committed = null },
+                onCommit = { commitError = null; commitSheet = true },
+                onDiscard = { discardAsk = it },
+            )
+        },
         onSearch = { searchOpen = !searchOpen },
         chatSlot = { CompositionLocalProvider(LocalChatImages provides images) { Column(Modifier.fillMaxSize()) {
             if (searchOpen) ChatSearchBar(

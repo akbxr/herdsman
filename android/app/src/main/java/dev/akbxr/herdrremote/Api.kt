@@ -211,6 +211,29 @@ class Api(val base: String, val token: String) {
         return Changes.from(call("/api/changes?$q", timeoutMs = 20_000))
     }
 
+    /**
+     * Commits exactly [paths] in the agent's repository with [message]
+     * (Commit.kt). A failure's message is what git and its hooks printed.
+     */
+    suspend fun commit(terminal: String, message: String, paths: List<String>): CommitDone {
+        val o = call(
+            "/api/commit",
+            JSONObject().put("terminal", terminal).put("message", message).put("paths", JSONArray(paths)),
+            timeoutMs = 200_000,  // hooks can run tests
+        )
+        return CommitDone(o.optString("hash"), o.optString("subject"), o.optInt("files"))
+    }
+
+    /** One file back as the last commit has it; a new file is deleted. */
+    suspend fun discard(terminal: String, path: String) {
+        call("/api/discard", JSONObject().put("terminal", terminal).put("path", path), timeoutMs = 35_000)
+    }
+
+    /** A commit message written on the Mac from the files' names and statuses (empty [paths]: every changed file). */
+    suspend fun suggestCommit(terminal: String, paths: List<String>): String =
+        call("/api/commit/suggest?terminal=" + enc(terminal) + paths.joinToString("") { "&path=" + enc(it) }, timeoutMs = 20_000)
+            .optString("message")
+
     /** Where a new task can start: recent folders, then git projects (NewTask.kt). */
     suspend fun folders(): TaskFolders {
         val o = call("/api/folders", timeoutMs = 15_000)

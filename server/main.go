@@ -172,6 +172,11 @@ func main() {
 	mux.HandleFunc("GET /api/models", s.auth(s.modelsHandler)) // the models and thinking levels an agent offers
 	mux.HandleFunc("POST /api/session", s.auth(s.session))     // switch a running agent's model or thinking level
 
+	// The Changes view's actions (commit.go).
+	mux.HandleFunc("POST /api/commit", s.auth(s.commit))               // commit the files picked
+	mux.HandleFunc("GET /api/commit/suggest", s.auth(s.commitSuggest)) // a message from the changed files' names
+	mux.HandleFunc("POST /api/discard", s.auth(s.discard))             // one file back as the last commit has it
+
 	s.events = newEventHub(s.hc)
 	go s.events.run(context.Background())
 	if *awake {

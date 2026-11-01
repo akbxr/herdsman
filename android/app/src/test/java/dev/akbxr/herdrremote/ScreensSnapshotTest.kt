@@ -144,12 +144,13 @@ class ScreensSnapshotTest {
         status: AgentEvent?, message: String = "", suggestions: List<Pair<String, String>> = emptyList(),
         items: List<ChatItem> = chatItems, prompt: Prompt? = null, pending: List<String> = emptyList(),
         mode: String = "chat", changes: Changes? = null, modelChip: (@Composable () -> Unit)? = null,
+        changesSlot: (@Composable () -> Unit)? = null,
     ) {
         AgentContent(
             mode = mode, chatAvailable = true, suggestions = suggestions, modelChip = modelChip,
             snippets = Snippets.DEFAULT,
             chatSlot = { ChatView(items, status, "tego", prompt = prompt, pending = pending, onAnswer = {}, onOpenTerminal = {}) },
-            changesSlot = { ChangesView(changes, changes?.files.orEmpty()) },
+            changesSlot = changesSlot ?: { ChangesView(changes, changes?.files.orEmpty()) },
             terminal = "t12", agent = herd.agents[0], status = TermStatus(), ctrl = false, problem = null,
             message = message, onMessage = {}, attachments = emptyList(), sending = false, refused = false,
             onBack = {}, onMore = {}, onAttach = {}, onRemove = {}, onSend = {}, onKey = {},
@@ -194,6 +195,78 @@ class ScreensSnapshotTest {
             )
         }
     }
+
+    private val changedFiles = listOf(
+        ChangedFile("src/login.tsx", "M", 3, 1, false, "@@ -38,7 +38,9 @@ export function Login() {\n   const [email, setEmail] = useState(\"\")\n-  if (error) resetForm()\n+  if (error) {\n+    setPassword(\"\")\n+  }\n   return (", false),
+        ChangedFile("src/login.test.tsx", "?", 24, 0, false, "@@ -0,0 +1,24 @@\n+import { render } from \"@testing-library/react\"", false),
+        ChangedFile("src/old-form.ts", "D", 0, 31, false, "@@ -1,31 +0,0 @@\n-export function resetForm() {", false),
+        ChangedFile("public/logo.png", "M", 0, 0, true, "", false),
+    )
+    private val sampleChanges = Changes(repo = true, root = "/p", branch = "main", more = 0, version = "v", files = changedFiles)
+
+    @Test fun changesCommitBar() = paparazzi.snapshot {
+        Frame {
+            ChatScreen(event("done"), mode = "changes", changesSlot = { ChangesView(sampleChanges, changedFiles, onCommit = {}, onDiscard = {}) })
+        }
+    }
+
+    @Test fun changesCommitted() = paparazzi.snapshot {
+        Frame {
+            ChatScreen(event("done"), mode = "changes", changesSlot = {
+                ChangesView(
+                    sampleChanges.copy(files = changedFiles.drop(3)), changedFiles.drop(3),
+                    committed = CommitDone("a1b2c3d", "fix(login): keep the email after a failed attempt", 3),
+                    onCommit = {}, onDiscard = {},
+                )
+            })
+        }
+    }
+
+    @Test fun commitSheetHookError() = paparazzi.snapshot {
+        HerdrTheme {
+            SheetFrame {
+                CommitSheetContent(
+                    files = changedFiles, more = 0, branch = "main",
+                    picked = changedFiles.take(3).map { it.path }.toSet(), onPick = { _, _ -> }, onPickAll = {},
+                    message = "fix(login): keep the email after a failed attempt\n\nresetForm() ran on every error; now only the password clears.",
+                    onMessage = {}, onSuggest = {}, suggesting = false,
+                    ask = "tego", askBlocked = null, onAsk = {},
+                    busy = false,
+                    error = "husky - pre-commit script failed (code 1)\n> eslint --max-warnings 0 src\n\nsrc/login.tsx\n  41:7  error  'resetForm' is defined but never used  no-unused-vars\n\n✖ 1 problem (1 error, 0 warnings)",
+                    onCommit = {}, onCancel = {},
+                )
+            }
+        }
+    }
+
+    @Test fun commitSheetAgentWorking() = paparazzi.snapshot {
+        HerdrTheme {
+            SheetFrame {
+                CommitSheetContent(
+                    files = changedFiles, more = 2, branch = "main",
+                    picked = changedFiles.map { it.path }.toSet(), onPick = { _, _ -> }, onPickAll = {},
+                    message = "", onMessage = {}, onSuggest = {}, suggesting = false,
+                    ask = "tego", askBlocked = "tego is working; ask it when it's done.", onAsk = {},
+                    busy = false, error = null, onCommit = {}, onCancel = {},
+                )
+            }
+        }
+    }
+
+    @Composable
+    private fun DiscardOver(file: ChangedFile) {
+        Frame {
+            ChatScreen(event("done"), mode = "changes", changesSlot = { ChangesView(sampleChanges, changedFiles, onCommit = {}, onDiscard = {}) })
+            Box(Modifier.fillMaxSize().background(androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.5f)))
+            Box(Modifier.fillMaxSize().padding(horizontal = 24.dp), contentAlignment = androidx.compose.ui.Alignment.Center) {
+                DiscardConfirm(file, onConfirm = {}, onDismiss = {})
+            }
+        }
+    }
+
+    @Test fun discardConfirm() = paparazzi.snapshot { DiscardOver(changedFiles[0]) }
+
+    @Test fun discardConfirmNew() = paparazzi.snapshot { DiscardOver(changedFiles[1]) }
 
     @Test fun chatLoading() = paparazzi.snapshot {
         Frame {
