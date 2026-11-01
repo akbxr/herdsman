@@ -338,6 +338,7 @@ fun AgentScreen(api: Api, terminal: String, agent: Agent?, appScope: CoroutineSc
                 prompt = prompt,
                 pending = pending.map { it.first },
                 loading = chat == null,
+                live = chat?.live.orEmpty(),
                 onOption = { option ->
                     val st = chat?.status
                     prompt = null

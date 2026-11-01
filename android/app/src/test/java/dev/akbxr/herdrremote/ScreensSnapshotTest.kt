@@ -183,6 +183,32 @@ class ScreensSnapshotTest {
         }
     }
 
+    @Test fun chatLive() = paparazzi.snapshot {
+        Frame {
+            AgentContent(
+                mode = "chat", chatAvailable = true, snippets = Snippets.DEFAULT,
+                chatSlot = {
+                    ChatView(
+                        chatItems.take(4), event("working"), "tego",
+                        live = listOf(
+                            "Found it. resetForm() runs on every error, so the",
+                            "email is cleared together with the password. I'll",
+                            "keep the email and clear only the password:",
+                            "",
+                            "╭─ Edit: src/login.tsx ──────────────",
+                            "│ ⣾ running · 1s",
+                            "╰────────────────────────────────────",
+                        ),
+                        onAnswer = {}, onOpenTerminal = {},
+                    )
+                },
+                terminal = "t12", agent = herd.agents[0], status = TermStatus(), ctrl = false, problem = null,
+                message = "", onMessage = {}, attachments = emptyList(), sending = false, refused = false,
+                onBack = {}, onMore = {}, onAttach = {}, onRemove = {}, onSend = {}, onKey = {},
+            ) {}
+        }
+    }
+
     @Test fun chatLoading() = paparazzi.snapshot {
         Frame {
             AgentContent(

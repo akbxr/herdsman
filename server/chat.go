@@ -55,6 +55,7 @@ type chatResult struct {
 	Items   []ChatItem  `json:"items"`
 	Version string      `json:"version"`          // changes when the transcript does
 	Status  *AgentEvent `json:"status,omitempty"` // what it reports now: waiting for you, and on what
+	Live    []string    `json:"live,omitempty"`   // while it works: what its screen shows being written (live.go)
 }
 
 const (
@@ -95,12 +96,15 @@ func (s *server) chat(w http.ResponseWriter, r *http.Request) {
 		}
 		s.events.mu.Unlock()
 	}
+	if res.Status != nil && res.Status.State == "working" {
+		res.Live = s.liveScreen(r.Context(), t)
+	}
 	if path != "" {
 		st, err := os.Stat(path)
 		if err == nil {
 			res.Version = fmt.Sprintf("%d-%d", st.Size(), st.ModTime().UnixNano())
 			if r.URL.Query().Get("version") == res.Version {
-				writeJSON(w, map[string]any{"agent": agent, "source": path, "version": res.Version, "same": true, "status": res.Status})
+				writeJSON(w, map[string]any{"agent": agent, "source": path, "version": res.Version, "same": true, "status": res.Status, "live": res.Live})
 				return
 			}
 			res.Items, err = readChat(agent, path, st)
