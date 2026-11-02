@@ -768,6 +768,27 @@ class ScreensSnapshotTest {
         }
     }
 
+    // Each agent with the title of its session; and searching them.
+    private val herdSessions = herdBoth.copy(
+        agents = listOf(
+            herd.agents[0].copy(session = "Fix the bug in the nav bar"),
+            herd.agents[1].copy(session = "Research what PKI is and how certificates chain"),
+            herd.agents[2],
+        ) + cliAgents.map { if (it.terminal == "herdr:wF:p2") it.copy(session = "Fix the login form") else it },
+    )
+
+    @Test fun herdSessionTitles() = paparazzi.snapshot {
+        Frame { HerdScreen("AKBARs-MacBook-Air.local", herdSessions, problem = null, onOpen = {}, onPairAgain = {}, notifyOn = true) }
+    }
+
+    @Test fun herdSearch() = paparazzi.snapshot {
+        Frame { HerdScreen("AKBARs-MacBook-Air.local", herdSessions, problem = null, onOpen = {}, onPairAgain = {}, search = "fix") }
+    }
+
+    @Test fun herdSearchNothing() = paparazzi.snapshot {
+        Frame { HerdScreen("AKBARs-MacBook-Air.local", herdSessions, problem = null, onOpen = {}, onPairAgain = {}, search = "deploy") }
+    }
+
     @Test fun herdCliOnly() = paparazzi.snapshot {
         Frame {
             HerdScreen(

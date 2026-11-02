@@ -39,8 +39,15 @@ data class Agent(
     val spaceId: String = "",  // to show its tab on the Mac when another space shows
     val machine: String = "",  // the machine it runs on ("": this Mac)
     val source: String = "app",  // app: the Herdr app's window; herdr: the herdr CLI
+    val session: String? = null,  // the title of the session its agent works in
+    val cwd: String = "",  // its folder, when known (herdr CLI panes)
 ) {
     val title get() = label ?: app
+    /**
+     * The name before the session's title: the label, unless it only says
+     * the session again (Claude Code names its terminal after it), then the program.
+     */
+    val name get() = label?.takeUnless { l -> session != null && (l.contains(session, true) || session.contains(l, true)) } ?: app
     /** The number stamped on the tag: the address without its machine (a herdr pane's: p2). */
     val tagNumber get() = if (isHerdrPane(terminal)) terminal.substringAfterLast(':') else terminal.substringAfterLast('/')
     /** A pane of the herdr CLI, driven through POST /api/herdr (Control.kt). */
@@ -152,6 +159,10 @@ data class Herd(
             val app = root.optJSONObject("status") != null || root.optJSONObject("ls") != null
             val cli = root.optJSONObject("herdr")
             val workspaces = cli?.let { readHerdr(it, agents) }.orEmpty()
+            // The sessions' titles, by terminal (the server reads them from the transcripts).
+            root.optJSONObject("titles")?.let { titles ->
+                agents.replaceAll { a -> titles.str(a.terminal).trim().takeIf { it.isNotEmpty() }?.let { a.copy(session = it) } ?: a }
+            }
             return Herd(layout, agents, tabs, machines, app, cli != null, workspaces)
         }
 
@@ -195,6 +206,7 @@ data class Herd(
                         pane = paneId,
                         spaceId = wsId,
                         source = "herdr",
+                        cwd = p.str("foreground_cwd").ifEmpty { p.str("cwd") },
                     )
                 }
             return spaces.keys.sortedWith(compareBy({ !wsFocused(it) }, { wsOrder[it] })).map { Workspace(it, name(spaces[it], it), wsFocused(it)) }

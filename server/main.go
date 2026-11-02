@@ -54,6 +54,8 @@ type server struct {
 	hasTool      func(name string) bool // whether a program is installed
 	// The transcript the agent in a terminal has open (sessions.go).
 	transcriptOf func(ctx context.Context, terminal string) string
+
+	titles titleCache // the session titles of the agents' terminals (titles.go)
 }
 
 func usage() {
@@ -439,6 +441,12 @@ func (s *server) state(w http.ResponseWriter, r *http.Request) {
 	}
 	if m := <-machines; m != nil {
 		reply["machines"] = m
+	}
+	// terminal -> the title of the session its agent works in ("herdr:wF:p2": "Fix the nav")
+	if t := s.sessionTitles(r.Context()); len(t) > 0 {
+		if raw, err := json.Marshal(t); err == nil {
+			reply["titles"] = raw
+		}
 	}
 	writeJSON(w, reply)
 }

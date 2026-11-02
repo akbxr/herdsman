@@ -120,7 +120,12 @@ The phone needs Tailscale on too, signed in to the same account.
 
 - **Herd**: every terminal as an ear tag stamped with its address, colored
   by state: yellow needs you, blue working, green done, grey idle. Sorted
-  with what needs you first. The tab bar counts the yellow ones.
+  with what needs you first. The tab bar counts the yellow ones. Each agent
+  shows the title of its session beside its name ("tego · Fix the nav
+  bar"): the title tego or Claude Code gave it, else its first message.
+  The magnifier searches them: every word you type has to be in the agent,
+  the session's title, the tab, space or workspace, the folder, the address,
+  the machine or the state ("claude pki", "api tab 2", "needs").
 - **Chat** (tap an agent's tag): its conversation, read from the agent's own
   transcript: what you asked, its answers in Markdown, and the tools it ran
   folded into one line each run (tap to see commands, results, failures).
@@ -230,7 +235,7 @@ All under `/api`, with `Authorization: Bearer <token>` (except `/pair`):
 |---|---|---|
 | POST | `/pair` | `{code}` → `{token, host}`; no token needed, the code is the key |
 | GET | `/ping` | host name, version |
-| GET | `/state` | `herdr-app status` + `herdr-app ls`, and `machines`: the array of `hc machine ls --json` (left out when hc can't list them); `herdr`: the herdr CLI's default session, `session.snapshot`'s snapshot `{workspaces, tabs, panes, agents, layouts, focused_*_id, …}` (left out when herdr doesn't answer within 2 s). Either the Herdr app or the herdr CLI is enough: without the app, `status` and `ls` are left out; 502 only when neither answers |
+| GET | `/state` | `herdr-app status` + `herdr-app ls`, and `machines`: the array of `hc machine ls --json` (left out when hc can't list them); `herdr`: the herdr CLI's default session, `session.snapshot`'s snapshot `{workspaces, tabs, panes, agents, layouts, focused_*_id, …}` (left out when herdr doesn't answer within 2 s). Either the Herdr app or the herdr CLI is enough: without the app, `status` and `ls` are left out; 502 only when neither answers. `titles`: `{terminal: title}`, the title of the session each agent works in (tego and Claude Code, on this Mac), refreshed in the background at most every 5 s while asked |
 | GET | `/shot?max=1600` | JPEG of the window |
 | POST | `/do` | `{command, args?}` → `herdr-app do` |
 | GET | `/read?terminal=t12&lines=200` | `hc read`; a herdr pane: `pane.read` as plain text (`visible`, or `recent` with `lines` more than the screen) → `{text, complete, how}` |

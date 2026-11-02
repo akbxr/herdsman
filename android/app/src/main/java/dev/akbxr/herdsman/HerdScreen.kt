@@ -1,4 +1,15 @@
 package dev.akbxr.herdsman
+import androidx.activity.compose.BackHandler
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.foundation.border
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.Icon
 import androidx.compose.material.icons.filled.Notifications
@@ -207,8 +218,16 @@ fun HerdScreen(
     notifyOn: Boolean = false,
     onNotifyMenu: () -> Unit = {},  // the bell: turn off, background setting
     onMachines: () -> Unit = {},  // the machines sheet: add, reconnect, remove
+    search: String? = null,  // open with the search showing these words (snapshots)
 ) {
-    val agents = herd?.agents.orEmpty().sortedWith(compareBy({ order.indexOf(it.state) }, { it.tabName }))
+    // Search: a field under the header; while it holds words, one flat list of what matches.
+    var searching by rememberSaveable { mutableStateOf(search != null) }
+    var query by rememberSaveable { mutableStateOf(search.orEmpty()) }
+    if (searching) BackHandler { searching = false; query = "" }
+    val all = herd?.agents.orEmpty().sortedWith(compareBy({ order.indexOf(it.state) }, { it.tabName }))
+    val filtering = searching && query.isNotBlank()
+    val found = if (filtering) all.filter { it.matches(query) } else all
+    val agents = all
     val appAgents = agents.filter { !it.cli }
     val cliAgents = agents.filter { it.cli }
     // The Herdr app's terminals on other machines, or a machine added: grouped by machine.
@@ -232,6 +251,10 @@ fun HerdScreen(
                         style = Type.small, color = Ink.dust, maxLines = 1, overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f),
                     )
+                    if (all.isNotEmpty() && !searching) Box(
+                        Modifier.size(40.dp).clip(RoundedCornerShape(10.dp)).clickable(role = Role.Button) { searching = true },
+                        contentAlignment = Alignment.Center,
+                    ) { Icon(Icons.Filled.Search, contentDescription = "Search the terminals", tint = Ink.dust, modifier = Modifier.size(19.dp)) }
                     if (notifyOn) {
                         Box(
                             Modifier.size(40.dp).clip(RoundedCornerShape(10.dp)).clickable(role = Role.Button, onClick = onNotifyMenu),
@@ -265,7 +288,24 @@ fun HerdScreen(
                     Notice(problem, Modifier.padding(end = 12.dp), action = problemAction)
                 }
                 Spacer(Modifier.height(14.dp))
+                if (searching) {
+                    HerdSearchField(query, onQuery = { query = it }, onClose = { searching = false; query = "" }, modifier = Modifier.padding(end = 12.dp))
+                    Spacer(Modifier.height(8.dp))
+                }
             }
+        }
+        if (filtering) {
+            if (found.isEmpty()) item(key = "nomatch") {
+                Text(
+                    "Nothing called “${query.trim()}”. Search looks in agents, session titles, tabs, spaces, folders and addresses.",
+                    style = Type.small, color = Ink.dust, modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp),
+                )
+            }
+            items(found, key = { it.terminal }) { agent ->
+                AgentRow(agent, onClick = { onOpen(agent) }, onLongClick = { onActions(agent) }, where = true)
+            }
+            item { notifications() }
+            return@LazyColumn
         }
         if (sections) item(key = "b:app") {
             val spaces = appAgents.map { it.spaceId }.distinct().size
@@ -303,7 +343,7 @@ fun HerdScreen(
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun AgentRow(agent: Agent, onClick: () -> Unit, onLongClick: () -> Unit) {
+private fun AgentRow(agent: Agent, onClick: () -> Unit, onLongClick: () -> Unit, where: Boolean = false) {
     Row(
         Modifier
             .fillMaxWidth()
@@ -314,7 +354,14 @@ private fun AgentRow(agent: Agent, onClick: () -> Unit, onLongClick: () -> Unit)
         EarTag(agent)
         Spacer(Modifier.width(18.dp))
         Column(Modifier.weight(1f)) {
-            Text(agent.title, style = Type.title, color = Ink.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            // "tego · Fix the nav bar": the session's title after the agent's name.
+            Text(
+                buildAnnotatedString {
+                    append(if (agent.session != null) agent.name else agent.title)
+                    agent.session?.let { withStyle(SpanStyle(fontWeight = FontWeight.Normal, color = Ink.text.copy(alpha = 0.82f))) { append("  ·  $it") } }
+                },
+                style = Type.title, color = Ink.text, maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
             Spacer(Modifier.height(3.dp))
             Text(
                 buildAnnotatedString {
@@ -323,12 +370,69 @@ private fun AgentRow(agent: Agent, onClick: () -> Unit, onLongClick: () -> Unit)
                         // A herdr CLI pane: its workspace too, "api / Tab 2".
                         val tab = if (agent.tabName.all(Char::isDigit)) "Tab ${agent.tabName}" else agent.tabName
                         append(if (agent.cli) "  ·  ${agent.spaceName} / $tab" else "  ·  Tab ${agent.tabName}")
+                        // In search results, out of their machine's group: the machine.
+                        if (where && agent.machine.isNotEmpty()) append(", ${agent.machine}")
                         if (agent.tabActive) append(", on screen")
                     }
                 },
                 style = Type.small, maxLines = 1, overflow = TextOverflow.Ellipsis,
             )
         }
+    }
+}
+
+/**
+ * Whether every word of [query] is somewhere in what the row is: the agent,
+ * its session's title, its name, tab, space or workspace, folder, address,
+ * machine or state ("claude pki", "api tab 2", "p3", "needs").
+ */
+internal fun Agent.matches(query: String): Boolean {
+    val words = query.lowercase().split(Regex("\\s+")).filter { it.isNotEmpty() }
+    if (words.isEmpty()) return true
+    val tab = if (tabName.all(Char::isDigit)) "tab $tabName" else tabName
+    val hay = listOfNotNull(app, agentTitle(app), label, session, tab, spaceName, cwd, terminal, tagNumber, machine, state.word)
+        .joinToString("\n").lowercase()
+    return words.all { it in hay }
+}
+
+/** The search field over the herd, as the chat's ([ChatSearchBar]). */
+@Composable
+private fun HerdSearchField(query: String, onQuery: (String) -> Unit, onClose: () -> Unit, modifier: Modifier = Modifier) {
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
+    Row(modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            Modifier
+                .weight(1f)
+                .height(44.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(Ink.pen)
+                .border(1.dp, Ink.rule, RoundedCornerShape(10.dp))
+                .padding(horizontal = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(Icons.Filled.Search, contentDescription = null, tint = Ink.dust, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            BasicTextField(
+                value = query,
+                onValueChange = onQuery,
+                singleLine = true,
+                textStyle = Type.body.copy(color = Ink.text),
+                cursorBrush = SolidColor(Ink.yellow),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                modifier = Modifier.weight(1f).focusRequester(focus),
+                decorationBox = { inner ->
+                    Box(contentAlignment = Alignment.CenterStart) {
+                        if (query.isEmpty()) Text("Agent, session, tab, space, folder…", style = Type.body, color = Ink.dust.copy(alpha = 0.7f), maxLines = 1)
+                        inner()
+                    }
+                },
+            )
+        }
+        Box(
+            Modifier.size(44.dp).clip(RoundedCornerShape(10.dp)).clickable(role = Role.Button, onClick = onClose),
+            contentAlignment = Alignment.Center,
+        ) { Icon(Icons.Filled.Close, contentDescription = "Close the search", tint = Ink.text) }
     }
 }
 

@@ -265,7 +265,8 @@ func TestHerdrState(t *testing.T) {
 	if code != 200 || string(out["status"]) != `{"window":true}` || string(out["ls"]) != `{"spaces":[]}` || !reflect.DeepEqual(got, wantV) {
 		t.Errorf("both: %d %v", code, out)
 	}
-	if m := f.took("session.snapshot"); len(m) != 1 || len(m[0]) != 0 {
+	// One for the reply (the session titles' refresh may ask too): never with params.
+	if m := f.took("session.snapshot"); len(m) == 0 || len(m[0]) != 0 {
 		t.Errorf("snapshot params: %v", m)
 	}
 

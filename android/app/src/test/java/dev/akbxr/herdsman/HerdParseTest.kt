@@ -166,6 +166,34 @@ class HerdParseTest {
         assertEquals(listOf(1, 2, 0), machineGroups(herd, herd.appAgents).map { it.agents.size })
     }
 
+    @Test fun readsSessionTitles() {
+        val root = JSONObject(state).put("herdr", JSONObject(snapshot))
+            .put("titles", JSONObject("""{"t12": "Fix the bug in the nav", "herdr:wF:p2": "Fix the login form", "herdr:wA:p1": "  "}"""))
+        val herd = Herd.from(root)
+        val tego = herd.agents.first { it.terminal == "t12" }
+        assertEquals("Fix the bug in the nav", tego.session)
+        assertEquals(tego.title, tego.name)  // its own name stays
+        val claude = herd.agents.first { it.terminal == "herdr:wF:p2" }
+        assertEquals("Fix the login form", claude.session)
+        assertEquals("claude", claude.name)  // its terminal title only said the session again
+        assertEquals(null, herd.agents.first { it.terminal == "herdr:wA:p1" }.session)  // blank: none
+        assertEquals(null, herd.agents.first { it.terminal == "t4" }.session)
+    }
+
+    @Test fun searchMatchesEveryWord() {
+        val herd = Herd.from(JSONObject(state).put("herdr", JSONObject(snapshot))
+            .put("titles", JSONObject("""{"herdr:wF:p2": "Research what PKI is"}""")))
+        fun find(q: String) = herd.agents.filter { it.matches(q) }.map { it.terminal }
+        assertEquals(listOf("herdr:wF:p2"), find("claude pki"))  // agent + session, any case
+        assertEquals(listOf("herdr:wF:p2"), find("  research   PKI "))
+        assertTrue(find("api").containsAll(listOf("herdr:wF:p2", "herdr:wF:p3")))  // the workspace (and the app's space)
+        assertEquals(listOf("herdr:wF:p3"), find("p3"))  // the address
+        assertEquals(listOf("t12", "herdr:wA:p1"), find("needs"))  // the state
+        assertEquals(listOf("vps/t3", "t4"), find("vps"))  // the machine (t4 is in vps's space)
+        assertEquals(herd.agents.size, find("").size)
+        assertEquals(emptyList<String>(), find("claude nav"))
+    }
+
     @Test fun appOnlyHasNoCli() {
         val herd = Herd.from(JSONObject(state))
         assertTrue(herd.app)
