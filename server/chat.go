@@ -69,11 +69,14 @@ type chatResult struct {
 	Current             // the model and thinking level it runs with now (models.go)
 }
 
+// The most read of a transcript on this Mac: back to where a rewind branched
+// off, or to older messages (a variable for tests).
+var chatReadMax int64 = 128 << 20
+
 const (
-	chatTail     = 3 << 20   // bytes read from the end of a transcript
-	chatReadMax  = 128 << 20 // the most read: back to where a rewind branched off, or to older messages
-	chatMaxItems = 120       // items sent unless the phone asks for more (?limit=)
-	chatAllItems = 20000     // the most it may ask for: the whole conversation, for search
+	chatTail     = 3 << 20 // bytes read from the end of a transcript
+	chatMaxItems = 120     // items sent unless the phone asks for more (?limit=)
+	chatAllItems = 20000   // the most it may ask for: the whole conversation, for search
 )
 
 // The items a read gave, for one transcript (on one machine) and limit,
@@ -554,7 +557,10 @@ func readTree(ctx context.Context, h host, agent, path string, size int64, limit
 	for {
 		items, cut := sc.build()
 		read := sc.to - sc.from
-		whole, capped := sc.from == 0, read >= readMax
+		// Capped by what was asked for, not what came: a line cut at the start
+		// is dropped, so the lines read always fall short of readMax (and asking
+		// for that again would read the same forever).
+		whole, capped := sc.from == 0 || sc.asked == 0, sc.to-sc.asked >= readMax
 		if whole || capped || (!cut && len(items) >= limit) {
 			return items, len(items) <= limit && (whole || capped), nil
 		}
@@ -776,6 +782,7 @@ type treeScan struct {
 	loaded   bool
 	agent    string
 	from, to int64
+	asked    int64 // where the last load was asked to start (from: after a line cut there)
 	entries  map[string]*treeEntry
 	order    []*treeEntry
 	last     string
@@ -798,7 +805,7 @@ func (sc *treeScan) load(ctx context.Context, agent, path string, from int64) er
 	fresh := newTreeScan(agent)
 	fresh.add(lines)
 	fresh.from, fresh.to = first, end
-	sc.loaded, sc.agent, sc.from, sc.to = true, agent, first, end
+	sc.loaded, sc.agent, sc.from, sc.to, sc.asked = true, agent, first, end, max(from, 0)
 	sc.entries, sc.order, sc.last = fresh.entries, fresh.order, fresh.last
 	return nil
 }

@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // noIDs: the items without their ids, to compare with what a test expects.
@@ -333,5 +334,52 @@ func TestClaudeSession(t *testing.T) {
 	os.WriteFile(filepath.Join(home, ".claude", "sessions", "7.json"), []byte(`{"sessionId":"../../etc/x","cwd":"/p"}`), 0o644)
 	if got := claudeSession(home, 7); got != "" {
 		t.Errorf("a path for a session id: %q", got)
+	}
+}
+
+// A transcript longer than the most read, with long lines: the read stops at
+// the cap (a line cut there is dropped, so fewer bytes than the cap come back)
+// instead of asking for the same part again forever.
+func TestReadChatPastTheCap(t *testing.T) {
+	old := chatReadMax
+	chatReadMax = chatTail * 2
+	t.Cleanup(func() { chatReadMax = old })
+
+	msg := func(id, parent, role, text string) string {
+		p := "null"
+		if parent != "" {
+			p = `"` + parent + `"`
+		}
+		return `{"type":"message","id":"` + id + `","parent":` + p + `,"message":{"role":"` + role + `","content":[{"type":"text","text":"` + text + `"}]}}` + "\n"
+	}
+	var sb strings.Builder
+	sb.WriteString(`{"type":"header","id":"s"}` + "\n")
+	pad := strings.Repeat("y", 700<<10) // long lines: the cap lands inside one
+	prev := ""
+	for i := 0; int64(sb.Len()) < chatReadMax*3; i++ {
+		u, a := fmt.Sprintf("u%d", i), fmt.Sprintf("a%d", i)
+		sb.WriteString(msg(u, prev, "user", fmt.Sprintf("question %d", i)))
+		sb.WriteString(msg(a, u, "assistant", pad))
+		prev = a
+	}
+	p := filepath.Join(t.TempDir(), "s.jsonl")
+	os.WriteFile(p, []byte(sb.String()), 0o644)
+	st, _ := os.Stat(p)
+
+	done := make(chan []ChatItem, 1)
+	go func() {
+		items, _, err := readChat("tego", p, st, chatMaxItems) // more than the cap holds
+		if err != nil {
+			t.Error(err)
+		}
+		done <- items
+	}()
+	select {
+	case items := <-done:
+		if len(items) == 0 || len(items) >= chatMaxItems {
+			t.Fatalf("%d items", len(items))
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("still reading after 10 s: it asks for the same part again and again")
 	}
 }

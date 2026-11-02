@@ -221,6 +221,9 @@ data class Herd(
             if (t.isEmpty()) return null
             val plain = t.lowercase()
             if (plain == app.lowercase() || plain == agentTitle(app).lowercase()) return null
+            // The command line that started it ("tego -r 20261029-… -m …"): says
+            // nothing the program's name doesn't (the session's title says more).
+            if (plain.startsWith(app.lowercase() + " ")) return null
             return t
         }
     }

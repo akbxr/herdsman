@@ -194,6 +194,13 @@ class HerdParseTest {
         assertEquals(emptyList<String>(), find("claude nav"))
     }
 
+    @Test fun aCommandLineTitleIsNoName() {
+        assertEquals(null, Herd.herdrTitle("tego -r 20261029-161421-e603e8 -m anthropic/claude-opus-5-5 -t high", "tego"))
+        assertEquals(null, Herd.herdrTitle("codex", "codex"))
+        assertEquals("Fix the login form", Herd.herdrTitle("✳ Fix the login form", "claude"))
+        assertEquals("tegory notes", Herd.herdrTitle("tegory notes", "tego"))  // not its command
+    }
+
     @Test fun appOnlyHasNoCli() {
         val herd = Herd.from(JSONObject(state))
         assertTrue(herd.app)
