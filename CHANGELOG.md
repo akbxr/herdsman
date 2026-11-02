@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/akbxr/herdsman/compare/v0.2.0...v0.3.0) (2026-11-02)
+
+
+### Features
+
+* session titles and search on the herd ([a1d84e7](https://github.com/akbxr/herdsman/commit/a1d84e773d14a526a931c9fbc1c33c9af97b410e))
+
 ## [0.2.0](https://github.com/akbxr/herdsman/compare/v0.1.0...v0.2.0) (2026-11-01)
 
 
