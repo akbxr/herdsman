@@ -181,7 +181,9 @@ private fun App(link: String?, onLinkUsed: () -> Unit, openFromNotification: Str
             ),
         )
         if (newTab) NewTabSheet(a, scope, onDismiss = { newTab = false }, onProblem = tell)
-        actionsFor?.let { PaneActions(a, it, scope, onDismiss = { actionsFor = null }, onProblem = tell) }
+        // Pinned agents and tabs: on this phone, for this Mac.
+        val pins = remember(host) { Pins(context, host) }
+        actionsFor?.let { PaneActions(a, it, scope, onDismiss = { actionsFor = null }, onProblem = tell, pins = pins) }
 
         Column(Modifier.fillMaxSize()) {
             Box(Modifier.weight(1f)) {
@@ -200,6 +202,7 @@ private fun App(link: String?, onLinkUsed: () -> Unit, openFromNotification: Str
                         notifyOn = notify,
                         onNotifyMenu = { notifyMenu = true },
                         onMachines = { machinesSheet = true },
+                        pins = pins.keys,
                     )
                     Section.Screen -> ScreenScreen(api = a, herd = herd)
                 }

@@ -126,6 +126,9 @@ The phone needs Tailscale on too, signed in to the same account.
   The magnifier searches them: every word you type has to be in the agent,
   the session's title, the tab, space or workspace, the folder, the address,
   the machine or the state ("claude pki", "api tab 2", "needs").
+  Press and hold one to pin it, or its whole tab (new terminals in it too),
+  to a Pinned section on top, in the order you pinned them; pins stay on the
+  phone, per Mac.
 - **Chat** (tap an agent's tag): its conversation, read from the agent's own
   transcript: what you asked, its answers in Markdown, and the tools it ran
   folded into one line each run (tap to see commands, results, failures).

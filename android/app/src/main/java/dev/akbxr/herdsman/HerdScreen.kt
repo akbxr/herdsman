@@ -219,6 +219,7 @@ fun HerdScreen(
     onNotifyMenu: () -> Unit = {},  // the bell: turn off, background setting
     onMachines: () -> Unit = {},  // the machines sheet: add, reconnect, remove
     search: String? = null,  // open with the search showing these words (snapshots)
+    pins: List<String> = emptyList(),  // pinned agents and tabs ([Pins]): on top, in their order
 ) {
     // Search: a field under the header; while it holds words, one flat list of what matches.
     var searching by rememberSaveable { mutableStateOf(search != null) }
@@ -228,8 +229,10 @@ fun HerdScreen(
     val filtering = searching && query.isNotBlank()
     val found = if (filtering) all.filter { it.matches(query) } else all
     val agents = all
-    val appAgents = agents.filter { !it.cli }
-    val cliAgents = agents.filter { it.cli }
+    // Pinned: their own section on top, out of their machine's or backend's.
+    val (pinned, rest) = splitPinned(all, pins)
+    val appAgents = rest.filter { !it.cli }
+    val cliAgents = rest.filter { it.cli }
     // The Herdr app's terminals on other machines, or a machine added: grouped by machine.
     val groups = herd?.let { machineGroups(it, appAgents) }.orEmpty()
     // Panes of the herdr CLI beside the Herdr app's: a section each.
@@ -302,17 +305,25 @@ fun HerdScreen(
                 )
             }
             items(found, key = { it.terminal }) { agent ->
-                AgentRow(agent, onClick = { onOpen(agent) }, onLongClick = { onActions(agent) }, where = true)
+                AgentRow(agent, onClick = { onOpen(agent) }, onLongClick = { onActions(agent) }, where = true, pinned = agent in pinned)
             }
             item { notifications() }
             return@LazyColumn
+        }
+        if (pinned.isNotEmpty()) {
+            item(key = "b:pinned") { PinnedHeader(pinned.size) }
+            items(pinned, key = { it.terminal }) { agent ->
+                AgentRow(agent, onClick = { onOpen(agent) }, onLongClick = { onActions(agent) }, where = true)
+            }
+            // What isn't pinned: under a heading of its own, unless something else heads it.
+            if (!sections && groups.isEmpty() && rest.isNotEmpty()) item(key = "b:rest") { PinnedHeader(rest.size, label = "Everything else") }
         }
         if (sections) item(key = "b:app") {
             val spaces = appAgents.map { it.spaceId }.distinct().size
             BackendHeader("Herdr app", if (spaces > 0) plural(spaces, "space") else null, appAgents.size)
         }
         if (groups.isEmpty()) {
-            items(if (sections) appAgents else agents, key = { it.terminal }) { agent ->
+            items(if (sections) appAgents else rest, key = { it.terminal }) { agent ->
                 AgentRow(agent, onClick = { onOpen(agent) }, onLongClick = { onActions(agent) })
             }
         } else groups.forEach { group ->
@@ -332,7 +343,7 @@ fun HerdScreen(
         }
         if (agents.isNotEmpty()) item {
             Text(
-                "Press and hold a terminal to split, zoom, rename or close it.",
+                "Press and hold a terminal to pin it or its tab on top, split, zoom, rename or close it.",
                 style = Type.small, color = Ink.dust.copy(alpha = 0.7f),
                 modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp),
             )
@@ -343,11 +354,11 @@ fun HerdScreen(
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun AgentRow(agent: Agent, onClick: () -> Unit, onLongClick: () -> Unit, where: Boolean = false) {
+private fun AgentRow(agent: Agent, onClick: () -> Unit, onLongClick: () -> Unit, where: Boolean = false, pinned: Boolean = false) {
     Row(
         Modifier
             .fillMaxWidth()
-            .combinedClickable(role = Role.Button, onClick = onClick, onLongClick = onLongClick, onLongClickLabel = "Split, zoom, rename or close")
+            .combinedClickable(role = Role.Button, onClick = onClick, onLongClick = onLongClick, onLongClickLabel = "Pin, split, zoom, rename or close")
             .padding(horizontal = 24.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -365,6 +376,7 @@ private fun AgentRow(agent: Agent, onClick: () -> Unit, onLongClick: () -> Unit,
             Spacer(Modifier.height(3.dp))
             Text(
                 buildAnnotatedString {
+                    if (pinned) withStyle(SpanStyle(color = Ink.dust)) { append("Pinned  ·  ") }
                     withStyle(SpanStyle(color = if (agent.state == State.Idle) Ink.dust else agent.state.tagColor())) { append(agent.state.word) }
                     withStyle(SpanStyle(color = Ink.dust)) {
                         // A herdr CLI pane: its workspace too, "api / Tab 2".
@@ -458,6 +470,22 @@ private fun BackendHeader(label: String, detail: String?, count: Int) {
             style = Type.label, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
         )
         if (count > 0) Text(count.toString(), style = Type.small, color = Ink.dust)
+    }
+}
+
+/** The heading of the pinned agents and tabs (or, [label], of the rest after them). */
+@Composable
+private fun PinnedHeader(count: Int, label: String = "Pinned") {
+    Row(
+        Modifier.fillMaxWidth().padding(start = 24.dp, end = 24.dp, top = 16.dp, bottom = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (label == "Pinned") {
+            Icon(PinIcon, contentDescription = null, tint = Ink.yellow, modifier = Modifier.size(14.dp))
+            Spacer(Modifier.width(7.dp))
+        }
+        Text(label, style = Type.label, color = Ink.text, maxLines = 1, modifier = Modifier.weight(1f))
+        Text(count.toString(), style = Type.small, color = Ink.dust)
     }
 }
 

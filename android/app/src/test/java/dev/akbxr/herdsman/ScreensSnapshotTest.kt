@@ -781,6 +781,24 @@ class ScreensSnapshotTest {
         Frame { HerdScreen("AKBARs-MacBook-Air.local", herdSessions, problem = null, onOpen = {}, onPairAgain = {}, notifyOn = true) }
     }
 
+    // An agent of the Herdr app and a herdr CLI tab pinned (its agent pinned first).
+    @Test fun herdPinned() = paparazzi.snapshot {
+        val cli = herdSessions.agents.first { it.terminal == "herdr:wF:p2" }
+        Frame {
+            HerdScreen(
+                "AKBARs-MacBook-Air.local", herdSessions, problem = null, onOpen = {}, onPairAgain = {},
+                pins = listOf(pinKey(herdSessions.agents[1]), tabPinKey(cli)),
+            )
+        }
+    }
+
+    @Test fun paneActionsPinned() = paparazzi.snapshot {
+        val agent = herd.agents[0]
+        HerdrTheme {
+            SheetFrame { ActionSheetContent(agent.title, paneWhere(agent), paneMenu(agent, pinned = true, tabPinned = false) {}) }
+        }
+    }
+
     @Test fun herdSearch() = paparazzi.snapshot {
         Frame { HerdScreen("AKBARs-MacBook-Air.local", herdSessions, problem = null, onOpen = {}, onPairAgain = {}, search = "fix") }
     }

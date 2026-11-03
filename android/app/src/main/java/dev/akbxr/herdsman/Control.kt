@@ -150,6 +150,7 @@ fun PaneActions(
     onDismiss: () -> Unit,
     onProblem: (String) -> Unit,
     onClosed: () -> Unit = {},
+    pins: Pins? = null,  // pin it or its tab on top of the herd
 ) {
     var step by remember { mutableStateOf("menu") }  // menu, split-right, split-down, close-pane, close-tab, rename
     fun act(done: () -> Unit = {}, block: suspend () -> Unit) {
@@ -161,8 +162,10 @@ fun PaneActions(
     when (step) {
         "menu" -> ActionSheet(
             title = agent.title, subtitle = paneWhere(agent), onDismiss = onDismiss,
-            actions = paneMenu(agent) { pick ->
+            actions = paneMenu(agent, pins?.agentPinned(agent), pins?.tabPinned(agent)) { pick ->
                 when (pick) {
+                    "pin" -> { pins?.toggleAgent(agent); onDismiss() }
+                    "pin-tab" -> { pins?.toggleTab(agent); onDismiss() }
                     "show" -> act { if (cli) api.herdrShow(agent.tabId, agent.spaceId) else api.showTab(agent.tabId, agent.spaceId) }
                     "zoom" -> act { api.zoom(agent.pane) }
                     "split-right", "split-down" -> if (cli) act { api.herdrSplit(agent.pane, pick.removePrefix("split-")) } else step = pick
@@ -196,11 +199,29 @@ fun paneWhere(agent: Agent): String =
     else "${agent.title} · Tab ${agent.tabName} · ${agent.terminal}"
 
 /**
- * The pane sheet's actions; [onPick] gets which: show, split-right,
- * split-down, zoom, rename, close-pane, close-tab. A herdr CLI pane has no
- * zoom, and its splits open a shell at once.
+ * The pane sheet's actions; [onPick] gets which: pin, pin-tab, show,
+ * split-right, split-down, zoom, rename, close-pane, close-tab. A herdr CLI
+ * pane has no zoom, and its splits open a shell at once. Pin and pin-tab
+ * when [pinned] and [tabPinned] are known (true: they unpin).
  */
-fun paneMenu(agent: Agent, onPick: (String) -> Unit): List<SheetAction> = if (agent.cli) listOf(
+fun paneMenu(agent: Agent, pinned: Boolean? = null, tabPinned: Boolean? = null, onPick: (String) -> Unit): List<SheetAction> =
+    pinActions(agent, pinned, tabPinned, onPick) + paneActions(agent, onPick)
+
+private fun pinActions(agent: Agent, pinned: Boolean?, tabPinned: Boolean?, onPick: (String) -> Unit): List<SheetAction> {
+    val tab = if (agent.tabName.all(Char::isDigit)) "Tab ${agent.tabName}" else agent.tabName
+    return listOfNotNull(
+        pinned?.let {
+            if (it) SheetAction("Unpin", "Back among the rest of the herd") { onPick("pin") }
+            else SheetAction("Pin to top", "Keep it at the top of the herd") { onPick("pin") }
+        },
+        tabPinned?.let {
+            if (it) SheetAction("Unpin $tab", "Its terminals go back among the rest") { onPick("pin-tab") }
+            else SheetAction("Pin $tab", "Every terminal in it at the top, new ones too") { onPick("pin-tab") }
+        },
+    )
+}
+
+private fun paneActions(agent: Agent, onPick: (String) -> Unit): List<SheetAction> = if (agent.cli) listOf(
     SheetAction("Show in herdr", "Bring this tab up in herdr on the Mac") { onPick("show") },
     SheetAction("Split right", "A new shell beside this pane") { onPick("split-right") },
     SheetAction("Split down", "A new shell under this pane") { onPick("split-down") },

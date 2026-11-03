@@ -180,6 +180,26 @@ class HerdParseTest {
         assertEquals(null, herd.agents.first { it.terminal == "t4" }.session)
     }
 
+    @Test fun pinsGoOnTopInTheirOrder() {
+        val herd = Herd.from(JSONObject(state).put("herdr", JSONObject(snapshot)))
+        val all = herd.agents
+        fun of(t: String) = all.first { it.terminal == t }
+        // A herdr CLI tab, then an agent of the app on its own: in the order pinned.
+        val wF = of("herdr:wF:p2")
+        val (pinned, rest) = splitPinned(all, listOf(tabPinKey(wF), pinKey(of("t12"))))
+        val inTab = all.filter { it.cli && it.tabId == wF.tabId }.map { it.terminal }
+        assertEquals(inTab + "t12", pinned.map { it.terminal })
+        assertEquals(all.map { it.terminal } - pinned.map { it.terminal }.toSet(), rest.map { it.terminal })
+        // An agent pinned on its own and in a pinned tab: once, where its first pin is.
+        val twice = splitPinned(all, listOf(pinKey(of("t12")), pinKey(wF), tabPinKey(wF))).first.map { it.terminal }
+        assertEquals("t12", twice[0])
+        assertEquals(twice.distinct(), twice)
+        // A tab key of the app's tabs is not a herdr CLI tab's of the same id.
+        assertTrue(tabPinKey(of("t12")) != tabPinKey(wF.copy(tabId = of("t12").tabId)))
+        // Pins of terminals gone: nothing.
+        assertEquals(emptyList<Agent>(), splitPinned(all, listOf("a:t999", "t:/tb99")).first)
+    }
+
     @Test fun searchMatchesEveryWord() {
         val herd = Herd.from(JSONObject(state).put("herdr", JSONObject(snapshot))
             .put("titles", JSONObject("""{"herdr:wF:p2": "Research what PKI is"}""")))
