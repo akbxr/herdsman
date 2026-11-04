@@ -1,346 +1,142 @@
 # Herdsman
 
-Look after your coding agents from an Android phone. Herdsman drives
-[Herdr](https://herdr.dev) on your Mac, both the Herdr app and the herdr
-CLI: see which agents need you, follow their chat, answer them, review and
-commit their changes, start or resume tasks, and use their terminals.
+An Android app for watching your coding agents in [Herdr](https://herdr.dev)
+on your Mac. It works with both the Herdr app and the herdr CLI. See who
+needs you, read and answer their chat, commit their changes, start or resume
+tasks, and type in their terminals.
 
-Two parts:
-
-- `server/`: `herdsman`, a small Go server on the Mac. It runs the
-  `herdr-app` and `hc` command-line tools (never a shell), talks to the herdr
-  CLI over its socket, and needs a token on every request.
-- `android/`: the app (Kotlin, Jetpack Compose). Design notes in
-  [DESIGN.md](DESIGN.md).
-
-Formerly `herdr-remote`. An install under that name moves over on its own:
-the server takes its config (and token, so paired phones keep working with
-the server), and `herdsman install` removes the old login agent and binary.
-The Android app has a new package name, so it installs beside the old one:
-pair it again and uninstall the old app.
+- `server/` is `herdsman`, a small Go server on the Mac. It calls `herdr-app`
+  and `hc` (never a shell) and herdr's socket, and wants a token on every
+  request.
+- `android/` is the app, in Kotlin and Jetpack Compose. Design notes are in
+  [DESIGN.md](DESIGN.md), the server's endpoints in [docs/API.md](docs/API.md).
 
 ## Safety
 
-Anyone with the token can type into your terminals, which means they can run
-commands on your Mac. So:
+Whoever has the token can type into your terminals, so they can run commands
+on your Mac. The server listens only on the Mac's Tailscale address, which
+only your own devices can reach. Don't put it on the internet.
+`herdsman -new-token` replaces the token, and every phone pairs again.
 
-- By default the server listens only on this Mac's **Tailscale** address.
-  Tailscale encrypts the traffic and only your own devices can reach it.
-- Don't expose it on the internet or forward the port on your router.
-- `herdsman -new-token` replaces the token (phones pair again).
+## Install the server
 
-## Mac: install the server
-
-Download `herdsman-<version>-darwin-arm64` (Apple silicon) or `-darwin-amd64`
-(Intel) from the [latest release](https://github.com/akbxr/herdsman/releases/latest),
-then once:
+Download `herdsman-<version>-darwin-arm64` (or `-darwin-amd64` for Intel)
+from the [latest release](https://github.com/akbxr/herdsman/releases/latest):
 
 ```sh
 chmod +x herdsman-*-darwin-arm64
-xattr -d com.apple.quarantine herdsman-*-darwin-arm64 2>/dev/null  # downloaded with a browser
+xattr -d com.apple.quarantine herdsman-*-darwin-arm64 2>/dev/null
 ./herdsman-*-darwin-arm64 install
 ```
 
-Or from the source: `cd server && go run . install`.
+From source, run `cd server && go run . install`. Run it again after changing
+the code.
 
-That copies `herdsman` to `~/.local/bin`, and starts it at every login
-through launchd (it restarts if it stops, and waits for Tailscale if it
-starts first). Then it shows a QR code for pairing a phone, and under it the
-address and a six-digit code:
-
-```
-Installed: herdsman now starts at login and restarts if it stops.
-
-Pair a phone: open Herdsman and tap Scan the code.
-
-  ▀▀▀▀▀▀▀▀▀  (QR code)
-
-No camera? Type the address and this code (works once, for 10 minutes):
-
-  address  100.x.y.z:7710
-  code     408 971
-```
-
-After that:
+`install` copies the binary to `~/.local/bin` and starts it at login through
+launchd. It then prints a QR code, the address and a six-digit code for
+pairing. The code works once, for ten minutes, and dies after five wrong
+tries.
 
 | Command | Does |
 |---|---|
-| `herdsman pair` | QR code and a fresh code, to pair another phone |
-| `herdsman status` | whether it runs, its address, and if it answers |
-| `herdsman uninstall` | stop starting at login (the token stays) |
-| `herdsman` | serve in the terminal instead, without launchd |
+| `herdsman pair` | a new QR code and code, for another phone |
+| `herdsman status` | whether it runs and answers |
+| `herdsman uninstall` | stop starting at login |
+| `herdsman` | run in the terminal, without launchd |
 
-Run `go run . install` again after changing the code: it replaces the binary
-and restarts the server. The log is `~/Library/Logs/herdsman.log`.
+The log is `~/Library/Logs/herdsman.log`, the token
+`~/.config/herdsman/token`.
 
-Tailscale has to be on (`tailscale up`, or the menu bar app); the address is
-what `tailscale ip -4` says. Without Tailscale, use an SSH tunnel:
-`herdsman install -addr 127.0.0.1:7710` on the Mac, and on the phone
-(Termux) `ssh -L 7710:127.0.0.1:7710 akbar@<mac>`, then pair with
+Without Tailscale, use an SSH tunnel. Run
+`herdsman install -addr 127.0.0.1:7710` on the Mac and
+`ssh -L 7710:127.0.0.1:7710 you@<mac>` on the phone (Termux), then pair with
 `127.0.0.1:7710`.
 
-The token lives in `~/.config/herdsman/token` (mode 0600). The QR code
-holds it; the six-digit code trades for it once (`POST /api/pair`), for ten
-minutes, and stops working after five wrong tries.
+## Install the app
 
-## Phone: install the app
+Get `herdsman-<version>.apk` from the
+[latest release](https://github.com/akbxr/herdsman/releases/latest), or
+`adb install -r` it. Each release installs over the last and keeps the
+pairing.
 
-Download `herdsman-<version>.apk` from the
-[latest release](https://github.com/akbxr/herdsman/releases/latest) on the
-phone and open it (allow installing from that app), or `adb install -r` it.
-Each release installs over the last one and keeps the pairing.
-
-Or build it (needs the Android SDK; Android Studio's JDK works):
+To build it yourself:
 
 ```sh
 cd android
 export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
-./gradlew assembleRelease
+./gradlew assembleRelease   # app/build/outputs/apk/release/app-release.apk
 ```
 
-The APK is `android/app/build/outputs/apk/release/app-release.apk`. Use the
-release build: it is shrunk and optimised by R8 and scrolls several times
-smoother than the debug one. It is signed with the release key when
-`~/.android/herdsman-release.properties` points at it (so it installs over a
-published APK), else with your debug key (then uninstall a published one
-first).
+Use the release build. It scrolls much smoother than the debug one. It is
+signed with the release key if `~/.android/herdsman-release.properties`
+exists, otherwise with your debug key, and then you have to uninstall a
+published APK first.
 
-Open **Herdsman** and pair:
+Open Herdsman and scan the QR code, or type the address and the six-digit
+code. The phone needs Tailscale on, signed in to the same account.
 
-- **Scan the code**: point the phone at the QR code on the Mac. The scanner
-  comes from Google Play services, so the app asks for no camera permission.
-  Scanning the code with another QR app also works: it opens Herdsman.
-- **No camera**: type the address and the six-digit code shown under the QR
-  code, then **Pair with the code**. The address can leave out `http://`
-  and `:7710`.
+## What it does
 
-The phone needs Tailscale on too, signed in to the same account.
+**Herd.** Every terminal as an ear tag, colored by state: yellow needs you,
+blue working, green done, grey idle. What needs you comes first. Each agent
+shows its session's title, like "tego · Fix the nav bar". The magnifier
+searches agent, title, tab, space, folder, address, machine and state, and
+every word has to match ("claude pki"). Press and hold a terminal to pin it
+or its whole tab to the top, or to split, zoom, rename or close it.
 
-## What the app does
+**Chat.** The agent's conversation, read from its own transcript, with
+Markdown answers and tool runs folded into one line. Below it is what the
+agent is doing right now. When it asks a question, the menu's choices become
+buttons, and the Mac checks the menu again before pressing anything. The
+chat loads the last 120 messages and older ones as you scroll up. Search
+covers all of it. Works for tego, Claude Code and Codex.
 
-- **Herd**: every terminal as an ear tag stamped with its address, colored
-  by state: yellow needs you, blue working, green done, grey idle. Sorted
-  with what needs you first. The tab bar counts the yellow ones. Each agent
-  shows the title of its session beside its name ("tego · Fix the nav
-  bar"): the title tego or Claude Code gave it, else its first message.
-  The magnifier searches them: every word you type has to be in the agent,
-  the session's title, the tab, space or workspace, the folder, the address,
-  the machine or the state ("claude pki", "api tab 2", "needs").
-  Press and hold one to pin it, or its whole tab (new terminals in it too),
-  to a Pinned section on top, in the order you pinned them; pins stay on the
-  phone, per Mac.
-- **Chat** (tap an agent's tag): its conversation, read from the agent's own
-  transcript: what you asked, its answers in Markdown, and the tools it ran
-  folded into one line each run (tap to see commands, results, failures).
-  Below it, what it does now: the tool running at the moment, or "Thinking…",
-  in a moving shimmer; a message you send shows at once ("Sent") until the
-  transcript has it. When it asks something, the choices of the menu on its
-  screen ("Yes", "Yes, and don't ask again", "No…") are buttons; the Mac
-  reads the menu again before pressing ↑/↓ and Enter, and types nothing if it
-  changed.
+The message box completes `/` commands and skills, and `@` files. Esc stops
+the agent, and quick replies (continue, yes, /compact) are one tap.
 
-  It opens on the last 120 messages; scroll to the top for older ones, back
-  to the start of the conversation. The search in the heading looks through
-  all of it: matches marked, ↑/↓ and "3 of 12" go from one to the next.
-  Pictures in your messages (pasted screenshots, photos attached from the
-  phone) show in your bubble; tap one to see it whole and pinch to zoom.
-- **Changes**: what is uncommitted in the agent's folder (git, against the
-  last commit, new files included): each file with +/− counts, tap for its
-  diff. **Commit…** at the bottom opens a sheet: a message (subject, blank
-  line, body), every file ticked (untick what stays out, new files
-  included), and Commit, which commits exactly those files in the
-  repository with a plain `git commit` (your config, identity and hooks
-  apply; a hook's or git's error shows in the sheet as printed). **Write it
-  for me** fills the message from the files' names and statuses
-  (Conventional Commits, made on the Mac, no model); **Ask tego to commit**
-  sends the agent the request instead, when it isn't busy. Each file's ⋯
-  (or a long press) has **Discard**, after a confirm naming the file: back
-  to the last commit, or deleted when it is new (only a regular file inside
-  the repository). Works for tego, Claude Code and Codex (a shell
-  has no chat and opens on its terminal). **Chat | Terminal** at the top
-  switches.
+**Model and thinking.** For tego and Claude Code, the first chip under the
+message box shows the model and thinking level. Change them there while the
+agent is idle. The app types the agent's own `/model` and `/thinking` (or
+`/effort`) commands.
 
-  The message box suggests as you type: `/` lists the agent's commands, your
-  custom commands (`~/.claude/commands`, `.tego/commands`…) and skills; `@`
-  finds files in the folder the agent works in. Under it, **Esc** stops the
-  agent, and quick replies (continue, yes, /compact…) put their text in the
-  box; hold one to change or remove it, **+** adds one.
-- **Model and thinking**: on the Chat tab of tego and Claude Code, the first
-  chip under the message box shows what the agent runs with ("◆ Opus 5.5 ·
-  high"). Tap it for a sheet with the thinking levels (Claude calls them
-  effort) and the models; **Apply** types the agent's own commands
-  (`/thinking low`, `/model anthropic/claude-sonnet-5-5:low` for tego;
-  `/model claude-sonnet-5-5`, `/effort low` for Claude Code, confirming its
-  "Switch model?" question). Only while the agent is idle or done: while it
-  works or waits for you the sheet says so and Apply stays off. The chip
-  shows the new choice at once, then what the agent's screen says. Both
-  agents keep what you pick as their default for new sessions too. tego's
-  models are the ones it fetched from your providers (`~/.tego/models.json`),
-  Claude Code's those of its `/model` picker. The current values come from
-  tego's status line, and from Claude Code's transcript, screen, flags and
-  settings. A running Codex can't switch (its `/model` takes no argument).
-- **New task** (**New** on the herd): a folder, an agent, what to do; the Mac opens
-  a tab there running it. For tego, Claude Code and Codex, **Model** and
-  **Thinking** pickers next to the agents pass `--model`/`--thinking`
-  (tego), `--model`/`--effort` (Claude Code) or `-m`/`-c
-  model_reasoning_effort=` (Codex); "Default" leaves the agent's own. The
-  phone remembers the last pick per agent.
-- **Resume**: pick up an earlier tego or Claude Code conversation in a new
-  tab, in the folder it was in (`tego --resume <id>`, `claude --resume
-  <id>`), and open it on the phone. Once a folder is picked, New task lists
-  **Earlier sessions here** above the agents; **Resume a session** (**New**
-  on the herd) lists the recent ones anywhere. Each shows its title (the
-  agent's own, else your first message), agent, when, and how many messages
-  you wrote. Sessions with nothing said are left out; one running in a
-  terminal now says so and opens that terminal instead of resuming it twice.
-  Codex isn't offered: the Codex installed (0.29) has no resume command.
-- **Terminal**: the terminal itself, live (`hc attach` over a
-  WebSocket, drawn by xterm.js with the Mac's Tokyo Night colors and Nerd
-  Font icons). Tap it to type: the phone's keyboard goes straight to the
-  program, without suggestions or autocorrect. The key bar adds Esc, Tab,
-  Ctrl (sticky: tap it, then a letter), arrows, Enter and Paste, enough to
-  answer a menu without opening the keyboard. **Show on Mac** brings its
-  tab up on the Mac.
+**Changes.** Uncommitted files in the agent's folder, with diffs. Commit a
+chosen set of files with a plain `git commit`, so your hooks run. The app can
+write the message for you, or ask the agent to commit. Discard puts one file
+back to the last commit.
 
-  Size: herdr-core gives a terminal the size of whoever was active last. While
-  you only watch, it keeps the Mac's size and the font shrinks to fit the
-  width; once you type on the phone, the program reflows to the phone's size
-  (the line under the terminal says which), and typing on the Mac takes it
-  back.
-- **Screen**: a picture of the Herdr window every 3 s (pinch to zoom,
-  double-tap to reset), the Mac's tabs to switch between, and **Next layout**.
-- **Notifications** (turn them on at the bottom of the herd): when an agent
-  needs you, finishes or stops with an error, in its own words ("Allow
-  `rm -rf build`?", the first line of its answer). Tap one to open that
-  terminal. Nothing is posted while the app is on screen. A needs-you
-  notification gets the menu's choices as buttons (three at most; Allow and
-  Deny when no menu is found), finished or failed ones a Reply.
+**New task and resume.** Pick a folder, an agent, a model and a prompt, and
+the Mac opens a tab running it. Earlier tego and Claude Code sessions can be
+resumed in a new tab. A session that is still running opens its terminal
+instead.
 
-  There is no push service: a foreground service on the phone waits on the
-  Mac's `/api/events` over Tailscale, with a quiet "Watching your Mac"
-  notification. For it to keep running while the phone sleeps:
-  - tap **Let it run in the background** in the app (Android's battery
-    exemption);
-  - on Xiaomi, POCO and Redmi phones also: Settings → Apps → Herdsman →
-    **Autostart** on, and **Battery saver** → **No restrictions**, or
-    HyperOS stops it anyway;
-  - Tailscale has to stay on on the phone.
+**Terminal.** The live terminal, drawn with xterm.js, with a key bar for Esc,
+Tab, Ctrl, arrows and Paste. Once you type on the phone, the program
+reflows to the phone's size. Typing on the Mac takes it back.
 
-  It starts again after the phone restarts. Statuses come from the programs
-  themselves (OSC 7501: tego, Claude Code, Codex, Pi, Crush send them); a
-  plain shell has none, so it never notifies.
+**Screen.** A picture of the Herdr window every 3 s, with the Mac's tabs and
+Next layout.
 
-## API
-
-All under `/api`, with `Authorization: Bearer <token>` (except `/pair`):
-
-| Method | Path | Does |
-|---|---|---|
-| POST | `/pair` | `{code}` → `{token, host}`; no token needed, the code is the key |
-| GET | `/ping` | host name, version |
-| GET | `/state` | `herdr-app status` + `herdr-app ls`, and `machines`: the array of `hc machine ls --json` (left out when hc can't list them); `herdr`: the herdr CLI's default session, `session.snapshot`'s snapshot `{workspaces, tabs, panes, agents, layouts, focused_*_id, …}` (left out when herdr doesn't answer within 2 s). Either the Herdr app or the herdr CLI is enough: without the app, `status` and `ls` are left out; 502 only when neither answers. `titles`: `{terminal: title}`, the title of the session each agent works in (tego and Claude Code, on this Mac), refreshed in the background at most every 5 s while asked |
-| GET | `/shot?max=1600` | JPEG of the window |
-| POST | `/do` | `{command, args?}` → `herdr-app do` |
-| GET | `/read?terminal=t12&lines=200` | `hc read`; a herdr pane: `pane.read` as plain text (`visible`, or `recent` with `lines` more than the screen) → `{text, complete, how}` |
-| POST | `/send` | `{terminal, text, force?}` → `hc send`; a herdr pane: an agent herdr knows gets `agent.prompt` (refused while it waits for an answer, unless `force`), anything else `pane.send_input` (the text, then Enter) → `{ok, how: prompt\|typed}` |
-| POST | `/keys` | `{terminal, keys: [...]}` → `hc keys`; a herdr pane: hc's key names translated to herdr's (below), in order; 400 for a key herdr doesn't know |
-| POST | `/interrupt` | `{terminal}` → `hc interrupt`; a herdr pane: Esc when herdr sees an agent there, else Ctrl-C → `{ok, key}` |
-| GET | `/attach?terminal=t12&cols=&rows=&token=` | WebSocket: `hc attach` in a PTY; binary frames are terminal bytes both ways, text frames `{"type":"size"}` (server) and `{"type":"resize"}`, `{"type":"reply"}` (phone); a herdr pane: a repaint stream (below) |
-| POST | `/upload?terminal=t12&name=x.png` | body = the file; `hc put` places it beside the terminal → `{path, bytes}`; a herdr pane's goes to `~/Library/Application Support/herdsman/uploads/<pane>/` |
-| GET | `/events?after=41&wait=25` | long poll for agents' status changes → `{seq, events}`; without `after`: `{seq, current}` |
-| POST | `/answer` | `{terminal, seq, answer: allow\|deny\|reply\|option, text?, option?}`: answers a waiting agent; 409 when the prompt is gone |
-| GET | `/chat?terminal=t12&version=&limit=120` | the last `limit` items of the agent's conversation from its transcript → `{agent, source, version, items, status, live, start, limit, model, modelLabel, thinking}`; `start: true` when nothing older is left; `same: true` when unchanged (the version includes the limit). Items carry a stable `id` and, for your messages, picture ids in `images` |
-| GET | `/image?id=&w=480` | a picture of the chat by id (an image block's bytes, or an image file named in a message), scaled to fit `w` pixels when given |
-| GET | `/prompt?terminal=t12` | the menu on the terminal's screen → `{prompt: {question, options, selected}}` or `null` |
-| GET | `/changes?terminal=t12&version=` | uncommitted git changes in the agent's folder: files with status, counts and patch |
-| POST | `/commit` | `{terminal, message, paths}`: commits exactly those changed files in the terminal's git root (`git commit --only`, new files added with `--intent-to-add` first; hooks run) → `{hash, subject, files}`; 422 with git's output when it fails, 400 for a path that isn't changed or leaves the repository |
-| GET | `/commit/suggest?terminal=t12&path=…` | a Conventional Commits message written from the changed files' names and statuses (all of them without `path`) → `{message}` |
-| POST | `/discard` | `{terminal, path}`: one changed file back to the last commit; a new file is deleted (a regular file inside the repository only) |
-| GET | `/commands?terminal=t12` | the agent's slash commands, custom commands and skills |
-| GET | `/files?terminal=t12&q=att` | files in the agent's folder, best matches first |
-| GET | `/folders?machine=` | where a new task can start: `{home, recent, projects}`; with `machine`, on that machine (recent: its terminals' folders) |
-| GET | `/agents?machine=` | the agents installed on the Mac, or on `machine` |
-| POST | `/task` | `{cwd, agent, prompt, model?, thinking?, machine?}`: a new tab running the agent; model and thinking become its start flags, checked against `/models`; with `machine`, `cwd` is a folder there and the tab opens in a space on that machine (the active one), else in a new space there → `{terminal, tab, space, agent, prompt}` (`terminal` is `machine/t7` then). `backend: "herdr"` (this Mac only): a new tab of the herdr CLI in the focused workspace, or `workspace: "wF"`, its shell typing the agent's command line → `terminal: "herdr:wF:p9"`, `tab: "wF:t5"`, `space: "wF"` |
-| GET | `/machines` | `{machines: [{name, label, host, state, why, temporary, local}]}`: this Mac first (`name` "", `local` true), then hc's machines; `state` connecting, connected, needs_login or unreachable; `error` when hc couldn't list them |
-| POST | `/machines` | `{host: "user@box", name?}` → `hc machine add --install` without a terminal (ssh keys only, never a password prompt; 60 s at most) → `{machine}`; 400 for a malformed host or name, 502 with hc's message when it fails |
-| POST | `/machines/remove` | `{name}` → `hc machine rm` → `{removed}`; 404 for an unknown machine |
-| POST | `/machines/connect` | `{name}`: dials it now (hc's `machine.connect`) → `{machine}`; 409 when it needs a password (`hc machine login NAME` on the Mac) |
-| GET | `/sessions?cwd=&agent=&limit=50&machine=` | sessions tego and Claude Code can resume, newest first, in `cwd` or anywhere (not temporary or deleted folders) → `{home, sessions: [{agent, id, title, cwd, time, messages, estimate, size, running}], partial}`; `running`: the terminal it runs in now; `estimate`: `messages` is a lower bound, not counted to the end yet; `partial`: the scan ran out of time. Reads the start and end of each transcript, keeps what it read until the file changes. With `machine` (another one): `{home, sessions: [], partial: false, note}` |
-| POST | `/resume` | `{agent, id, model?, thinking?}` (this Mac only: 400 with `machine`): a new tab in the session's folder running `tego --resume <id>` / `claude --resume <id>` → `{terminal, tab, space, agent, id, cwd}`; 404 for an unknown session, 400 for a malformed id or an empty session, 409 when its folder is gone or it runs already (`terminal` names it) |
-| POST | `/herdr` | `{method, params, confirmed?}`: one of the herdr CLI's `tab.create`, `tab.close`, `tab.rename`, `tab.focus`, `pane.close`, `pane.split`, `workspace.focus` on its default session, with the params herdr's schema gives it (ids as herdr's, a pane also as `herdr:wF:p2`); `tab.close` and `pane.close` need `confirmed: true` → `{result}` (herdr's result); 400 for another method, param or a missing confirm, herdr's errors as `{error, code}` (404 for `*_not_found`), 503 when herdr isn't running |
-| GET | `/models?agent=tego\|claude\|codex&terminal=` | `{agent, models: [{id, label, group}], thinking: [{id, label, detail}], thinkingName, live, note, supported: true}` (kept a minute); for a terminal on another machine `{supported: false, why}` |
-| POST | `/session` | `{terminal, agent?, model?, thinking?}`: switches a running tego or Claude Code with its own slash commands → `{agent, sent, current}`; 409 while it works or waits for you, or when the terminal no longer runs `agent`; 400 for a model or level it doesn't offer; for a terminal on another machine `{supported: false, why}` and nothing sent |
-
-Terminals on other machines (`hc machine add`) have addresses like
-`box/t7`; every endpoint that takes a terminal takes those. What the server
-reads beside hc (git for changes, commit and discard, the agent's
-transcript and its pictures, commands, files) it reads on that machine
-through `hc exec --on box`, batched into one or two round trips. On another
-machine, sessions are not listed (`{sessions: [], note}`) and the chat's
-model comes from the agent's screen only.
-
-### The herdr CLI
-
-Panes of the herdr CLI (`herdr`, its own server on
-`~/.config/herdr/herdr.sock`) are terminals too, on this Mac: `herdr:<pane
-id>`, like `herdr:wF:p2`. Every endpoint that takes a terminal takes them;
-the server speaks herdr's socket API (`pane.read`, `pane.send_*`,
-`pane.process_info` for the program in front and its folder, from which
-chat, changes, commit, commands, files and models work as for hc's
-terminals). Agent statuses come from herdr's `pane.agent_status_changed`
-into `/events`, in the same shape: `app` the agent, `state` idle, working,
-blocked or done (unknown clears it), `where` "workspace / tab".
-
-Key names for `/keys` (hc's → herdr's): `enter`/`return` → `enter`,
-`esc`/`escape` → `esc`, `tab`, `shifttab`/`btab` → `shift+tab`,
-`backspace`/`bs`, `space`, `up` `down` `left` `right`, `ctrl+c`/`C-c`/`^c` →
-`ctrl+c`, `alt+x`/`M-x` → `alt+x`, `f1`…`f12`, single characters as they
-are; herdr has no names for `home`, `end`, `pgup`, `pgdn`, `del`, `insert`:
-those are typed as their xterm sequences (`ESC[H`, `ESC[F`, `ESC[5~`,
-`ESC[6~`, `ESC[3~`, `ESC[2~`).
-
-`/attach` for a herdr pane is a repaint stream: herdr has no byte stream of
-a pane. The server sends `{"type":"size","cols","rows","snapshot":true}`,
-then the pane's history (scrolled into the phone's scrollback) and screen as
-ANSI; afterwards, whenever the screen changed (read on herdr's
-`pane.updated`, right after typing, and every 300 ms), one binary frame that
-hides the cursor, clears and repaints the screen, and parks the cursor after
-the last text. `rows` are the pane's, `cols` the widest row (at least 80);
-when either grows, a `size` with `repaint: true` and a full paint again.
-Typing: text through `pane.send_text`, Enter, Tab, Backspace, Esc, arrows,
-Shift-Tab and Ctrl-letters as herdr's keys, other sequences as bytes; mouse
-reports dropped; `resize` and `reply` ignored (the herdr TUI owns the size).
-
-The terminal page (`android/app/src/main/assets/term/terminal.html`) also
-opens in a desktop browser for debugging: `terminal.html#ws=<attach URL>`.
+**Notifications.** Turn them on at the bottom of the herd. You get one when
+an agent needs you, finishes or fails, with buttons to answer. There is no
+push service. A foreground service keeps a long poll open to the Mac, so
+allow it to run in the background. On Xiaomi, POCO and Redmi also turn on
+Autostart and set Battery saver to No restrictions, or HyperOS kills it. A
+plain shell sends no statuses, so it never notifies.
 
 ## Releases
 
-Versions come from the commit messages ([Conventional
-Commits](https://www.conventionalcommits.org)): on every push to `master`,
-[release-please](https://github.com/googleapis/release-please) keeps a release
-pull request up to date with the next version (`fix:` a patch, `feat:` a minor
-one; before 1.0 a breaking change is a minor one too) and the CHANGELOG.
-Merging it bumps the version in `android/app/build.gradle.kts` and
-`server/main.go`, tags `vX.Y.Z` and publishes the release. Then
-`.github/workflows/release.yml` builds and attaches:
+Commit messages follow [Conventional
+Commits](https://www.conventionalcommits.org). On every push to `master`,
+[release-please](https://github.com/googleapis/release-please) updates a
+release pull request (`fix:` bumps the patch, `feat:` the minor). Merging it
+tags the version, and `.github/workflows/release.yml` attaches the signed APK,
+the two server binaries and `SHA256SUMS`.
 
-- `herdsman-X.Y.Z.apk`, signed with the release key (its `versionCode` follows
-  from the version: 1.2.3 is 10203),
-- `herdsman-X.Y.Z-darwin-arm64` and `-darwin-amd64`, the server,
-- `SHA256SUMS`.
-
-The release key is in the repository secrets `HERDSMAN_KEYSTORE_BASE64`,
+The signing key lives in the repository secrets `HERDSMAN_KEYSTORE_BASE64`,
 `HERDSMAN_KEYSTORE_PASSWORD`, `HERDSMAN_KEY_ALIAS` and
-`HERDSMAN_KEY_PASSWORD`. Keep a copy of the keystore elsewhere: an app signed
-with another key can't update the installed one. To build a release's files
-again, run the Release workflow by hand with its tag.
+`HERDSMAN_KEY_PASSWORD`. Keep a copy of the keystore elsewhere. An APK signed
+with another key can't update the installed app.
 
-`.github/workflows/ci.yml` runs the server's tests on macOS and the app's
-build, unit tests and screen snapshots on every push and pull request.
-
-## Snapshots
-
-The screens render on the JVM with sample data (no device needed):
-`./gradlew recordPaparazziDebug`, images in
-`android/app/src/test/snapshots/images/`.
+CI (`.github/workflows/ci.yml`) runs the server tests, the app build, unit
+tests and screen snapshots. Re-record snapshots with
+`./gradlew recordPaparazziDebug`.
