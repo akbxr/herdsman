@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/akbxr/herdsman/compare/v0.3.1...v0.4.0) (2026-11-04)
+
+
+### Features
+
+* pin agents and tabs to the top of the herd ([3181b36](https://github.com/akbxr/herdsman/commit/3181b36c290e7e6cb2be9a17861dbfe73973703e))
+
 ## [0.3.1](https://github.com/akbxr/herdsman/compare/v0.3.0...v0.3.1) (2026-11-02)
 
 
