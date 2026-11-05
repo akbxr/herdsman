@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/akbxr/herdsman/compare/v0.4.0...v0.5.0) (2026-11-05)
+
+
+### Features
+
+* show the agent's todo list, subagents and background tasks ([a09dfda](https://github.com/akbxr/herdsman/commit/a09dfda46dd0794e99c7c58f971ef1e89697ac32))
+
 ## [0.4.0](https://github.com/akbxr/herdsman/compare/v0.3.1...v0.4.0) (2026-11-04)
 
 
