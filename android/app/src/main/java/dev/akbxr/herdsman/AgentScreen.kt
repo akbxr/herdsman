@@ -141,6 +141,7 @@ fun AgentScreen(api: Api, terminal: String, agent: Agent?, appScope: CoroutineSc
     var chatLimit by remember(terminal) { mutableIntStateOf(CHAT_PAGE) }
     val chatList = remember(terminal) { LazyListState() }
     var searchOpen by remember(terminal) { mutableStateOf(false) }
+    var workOpen by remember(terminal) { mutableStateOf(false) }
     var searchQuery by remember(terminal) { mutableStateOf("") }
     // The match shown, by its item's key and number: it stays when older items come in above.
     var searchAt by remember(terminal) { mutableStateOf<Pair<String, Int>?>(null) }
@@ -289,6 +290,10 @@ fun AgentScreen(api: Api, terminal: String, agent: Agent?, appScope: CoroutineSc
     var committed by remember(terminal) { mutableStateOf<CommitDone?>(null) }
     var discardAsk by remember(terminal) { mutableStateOf<ChangedFile?>(null) }
     val picked = changedFiles.map { it.path }.filter { it !in unpicked }
+    val work = chat?.work
+    if (workOpen && work != null) {
+        WorkSheet(work.seenWhile(chat?.status?.state), agent?.title ?: agentTitle(chat?.agent.orEmpty()), onDismiss = { workOpen = false })
+    }
     if (commitSheet) {
         val agentName = chat?.agent?.takeIf { it.isNotEmpty() }?.let { agent?.title ?: agentTitle(it) }
         val busyState = chat?.status?.state
@@ -602,6 +607,9 @@ fun AgentScreen(api: Api, terminal: String, agent: Agent?, appScope: CoroutineSc
                 },
                 onOpenTerminal = { userMode = "terminal" },
             )
+            chat?.work?.let { w ->
+                WorkBar(w.seenWhile(chat?.status?.state), onOpen = { workOpen = true }, modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp))
+            }
         } } },
         link = link,
         onOpenTailscale = { Net.openTailscale(context); Unit }.takeIf { Net.hasTailscale(context) },

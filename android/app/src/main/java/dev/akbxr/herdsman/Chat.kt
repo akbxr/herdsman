@@ -112,6 +112,7 @@ data class ChatLog(
     val start: Boolean = true,             // the items begin the conversation: nothing older to load
     val limit: Int = CHAT_PAGE,            // the most items asked for
     val current: CurrentModel = CurrentModel(),  // its model and thinking level now (Models.kt)
+    val work: ChatWork? = null,            // its todo list and subagents (Work.kt)
 ) {
     companion object {
         fun from(o: JSONObject, asked: Int = CHAT_PAGE): ChatLog {
@@ -137,6 +138,7 @@ data class ChatLog(
                 start = o.optBoolean("start", true),
                 limit = o.optInt("limit", asked),
                 current = CurrentModel.from(o),
+                work = o.optJSONObject("work")?.let(ChatWork::from)?.takeUnless { it.isEmpty },
             )
         }
     }

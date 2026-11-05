@@ -144,12 +144,17 @@ class ScreensSnapshotTest {
         status: AgentEvent?, message: String = "", suggestions: List<Pair<String, String>> = emptyList(),
         items: List<ChatItem> = chatItems, prompt: Prompt? = null, pending: List<String> = emptyList(),
         mode: String = "chat", changes: Changes? = null, modelChip: (@Composable () -> Unit)? = null,
-        changesSlot: (@Composable () -> Unit)? = null,
+        changesSlot: (@Composable () -> Unit)? = null, work: ChatWork? = null,
     ) {
         AgentContent(
             mode = mode, chatAvailable = true, suggestions = suggestions, modelChip = modelChip,
             snippets = Snippets.DEFAULT,
-            chatSlot = { ChatView(items, status, "tego", prompt = prompt, pending = pending, onAnswer = {}, onOpenTerminal = {}) },
+            chatSlot = {
+                Column(Modifier.fillMaxSize()) {
+                    ChatView(items, status, "tego", modifier = Modifier.weight(1f), prompt = prompt, pending = pending, onAnswer = {}, onOpenTerminal = {})
+                    work?.let { WorkBar(it.seenWhile(status?.state), onOpen = {}, modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) }
+                }
+            },
             changesSlot = changesSlot ?: { ChangesView(changes, changes?.files.orEmpty()) },
             terminal = "t12", agent = herd.agents[0], status = TermStatus(), ctrl = false, problem = null,
             message = message, onMessage = {}, attachments = emptyList(), sending = false, refused = false,
@@ -587,6 +592,32 @@ class ScreensSnapshotTest {
                 content()
             }
         }
+    }
+
+    private val workNow = 1_800_000_000_000L
+    private val work = ChatWork(
+        todos = listOf(
+            WorkTodo("Read how the form keeps its state", "completed", "Look"),
+            WorkTodo("Keep the email after a failed attempt", "in_progress", "Fix"),
+            WorkTodo("Clear only the password", "pending", "Fix"),
+            WorkTodo("Run the login tests", "pending", "Verify"),
+        ),
+        agents = listOf(
+            WorkAgent("SignupCheck", "done", task = "Check the signup form for the same bug", report = "Signup keeps its fields; only login resets them.", started = workNow - 300_000, ended = workNow - 200_000),
+            WorkAgent("Reviewer", "failed", kind = "reviewer", why = "stopped after 150 turns", started = workNow - 900_000, ended = workNow - 100_000),
+            WorkAgent("E2E", "running", id = "t3", task = "Run the end-to-end login suite in Chrome", background = true, started = workNow - 252_000),
+            WorkAgent("Docs", "running", id = "t4", task = "Update the login docs", background = true, started = workNow - 30_000),
+        ),
+    )
+
+    @Test fun chatWork() = paparazzi.snapshot { Frame { ChatScreen(event("working"), work = work) } }
+
+    @Test fun chatWorkAllDone() = paparazzi.snapshot {
+        Frame { ChatScreen(null, work = ChatWork(todos = work.todos.map { it.copy(status = "completed") }, agents = work.agents.take(1))) }
+    }
+
+    @Test fun workSheet() = paparazzi.snapshot {
+        SheetFrame { WorkSheetContent(work, "tego", now = workNow) }
     }
 
     @Test fun chatModelChip() = paparazzi.snapshot {

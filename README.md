@@ -91,6 +91,12 @@ buttons, and the Mac checks the menu again before pressing anything. The
 chat loads the last 120 messages and older ones as you scroll up. Search
 covers all of it. Works for tego, Claude Code and Codex.
 
+A bar above the message box shows the agent's todo list (done count and
+the item in progress) and how many subagents run. Tap it for the whole list
+and every subagent, with what it was asked and its report. This reads tego's
+todo, task and background tasks, Claude Code's todos and Agent tool, and
+Codex's plan.
+
 The message box completes `/` commands and skills, and `@` files. Esc stops
 the agent, and quick replies (continue, yes, /compact) are one tap.
 

@@ -247,4 +247,26 @@ class HerdParseTest {
         assertEquals("not on another machine", unsupported.why)
         assertTrue(ModelChoices.from(JSONObject("""{"agent":"tego"}""")).supported)
     }
+
+    @Test fun chatWorkParsesAndInterrupts() {
+        val log = ChatLog.from(JSONObject("""
+            {"agent":"tego","source":"/s.jsonl","version":"1","items":[],"start":true,"limit":120,
+             "work":{"todos":[{"text":"A","status":"completed","phase":"P"},{"text":"B","status":"in_progress"}],
+                     "agents":[{"name":"Fg","state":"running","started":1000},{"name":"Bg","id":"t2","state":"running","background":true},
+                               {"name":"Old","state":"failed","why":"boom"}]}}
+        """.trimIndent()))
+        val w = log.work!!
+        assertEquals(2, w.todos.size)
+        assertEquals("B", w.current?.text)
+        assertEquals(1, w.done)
+        assertEquals(2, w.running)
+        assertEquals("t2", w.agents[1].id)
+        // The agent stopped working: its task call's subagent can't still run; a background one can.
+        val idle = w.seenWhile("idle")
+        assertEquals(listOf("stopped", "running", "failed"), idle.agents.map { it.state })
+        assertEquals(w, w.seenWhile("working"))
+        // No work: none.
+        assertEquals(null, ChatLog.from(JSONObject("""{"agent":"tego","items":[],"work":{}}""")).work)
+        assertEquals("1h7m", shortDuration(4_020_000))
+    }
 }

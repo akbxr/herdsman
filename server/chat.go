@@ -67,6 +67,7 @@ type chatResult struct {
 	Start   bool        `json:"start"`            // nothing older to come: the items begin the conversation (or the most read does)
 	Limit   int         `json:"limit"`            // the most items asked for
 	Current             // the model and thinking level it runs with now (models.go)
+	Work    *ChatWork   `json:"work,omitempty"` // its todo list and subagents (work.go)
 }
 
 // The most read of a transcript on this Mac: back to where a rewind branched
@@ -91,6 +92,7 @@ type chatCacheEntry struct {
 	mtime time.Time
 	items []ChatItem
 	start bool
+	work  *ChatWork
 }
 
 var chatCache = struct {
@@ -176,10 +178,12 @@ func (s *server) chat(w http.ResponseWriter, r *http.Request) {
 			if c, ok := cachedChatOn(h.machine, path, limit, size, mtime); ok && r.URL.Query().Get("version") == res.Version {
 				writeJSON(w, map[string]any{"agent": agent, "source": path, "version": res.Version, "same": true,
 					"status": res.Status, "start": c.start, "limit": limit,
-					"model": res.Model, "modelLabel": res.ModelLabel, "thinking": res.Thinking})
+					"model": res.Model, "modelLabel": res.ModelLabel, "thinking": res.Thinking, "work": c.work})
 				return
 			}
-			res.Items, res.Start, err = readChatOn(ctx, h, agent, path, size, mtime, limit)
+			var read chatRead
+			read, err = readChatOn(ctx, h, agent, path, size, mtime, limit)
+			res.Items, res.Start, res.Work = read.items, read.start, read.work
 			if err != nil {
 				writeErr(w, http.StatusInternalServerError, err)
 				return
@@ -496,24 +500,34 @@ func claudeSlug(cwd string) string {
 // readChat: the last limit items of the conversation in a transcript, and
 // whether they begin it (nothing older to come).
 func readChat(agent, path string, st os.FileInfo, limit int) ([]ChatItem, bool, error) {
-	return readChatOn(context.Background(), host{}, agent, path, st.Size(), st.ModTime(), limit)
+	r, err := readChatOn(context.Background(), host{}, agent, path, st.Size(), st.ModTime(), limit)
+	return r.items, r.start, err
 }
 
-// readChatOn: readChat of a transcript on a machine, of that size and mtime.
-func readChatOn(ctx context.Context, h host, agent, path string, size int64, mtime time.Time, limit int) ([]ChatItem, bool, error) {
+// What a read of a transcript gave.
+type chatRead struct {
+	items []ChatItem
+	start bool
+	work  *ChatWork
+}
+
+// readChatOn: readChat of a transcript on a machine, of that size and mtime,
+// with the work it shows.
+func readChatOn(ctx context.Context, h host, agent, path string, size int64, mtime time.Time, limit int) (chatRead, error) {
 	if c, ok := cachedChatOn(h.machine, path, limit, size, mtime); ok {
-		return c.items, c.start, nil
+		return chatRead{c.items, c.start, c.work}, nil
 	}
 	var items []ChatItem
 	var start bool
+	var work *ChatWork
 	var err error
 	if agent == "codex" {
-		items, start, err = readCodex(ctx, h, path, size, limit)
+		items, start, work, err = readCodex(ctx, h, path, size, limit)
 	} else {
-		items, start, err = readTree(ctx, h, agent, path, size, limit)
+		items, start, work, err = readTree(ctx, h, agent, path, size, limit)
 	}
 	if err != nil {
-		return nil, false, err
+		return chatRead{}, err
 	}
 	if len(items) > limit {
 		items = items[len(items)-limit:]
@@ -530,16 +544,16 @@ func readChatOn(ctx context.Context, h host, agent, path string, size int64, mti
 	if len(chatCache.m) > 64 {
 		clear(chatCache.m)
 	}
-	chatCache.m[chatKey{h.machine, path, limit}] = chatCacheEntry{size, mtime, items, start}
+	chatCache.m[chatKey{h.machine, path, limit}] = chatCacheEntry{size, mtime, items, start, work}
 	chatCache.Unlock()
-	return items, start, nil
+	return chatRead{items, start, work}, nil
 }
 
 // readTree reads tego's and Claude Code's transcripts through a scan kept
 // per file: a grown file has only its new lines read. The scan reaches back
 // further (and is read again from there) while the branch in play goes on
 // before it (a rewind to an old point) or it holds fewer items than asked.
-func readTree(ctx context.Context, h host, agent, path string, size int64, limit int) ([]ChatItem, bool, error) {
+func readTree(ctx context.Context, h host, agent, path string, size int64, limit int) ([]ChatItem, bool, *ChatWork, error) {
 	readMax := h.chatReadMax()
 	sc := scanOf(h.machine + "\x00" + path)
 	sc.mu.Lock()
@@ -547,11 +561,11 @@ func readTree(ctx context.Context, h host, agent, path string, size int64, limit
 	sc.host, sc.files = h, images.resolver(h)
 	if sc.agent != agent || !sc.loaded || size < sc.to {
 		if err := sc.load(ctx, agent, path, size-chatTail); err != nil {
-			return nil, false, err
+			return nil, false, nil, err
 		}
 	} else if size > sc.to {
 		if err := sc.extend(ctx, path); err != nil {
-			return nil, false, err
+			return nil, false, nil, err
 		}
 	}
 	for {
@@ -562,7 +576,7 @@ func readTree(ctx context.Context, h host, agent, path string, size int64, limit
 		// for that again would read the same forever).
 		whole, capped := sc.from == 0 || sc.asked == 0, sc.to-sc.asked >= readMax
 		if whole || capped || (!cut && len(items) >= limit) {
-			return items, len(items) <= limit && (whole || capped), nil
+			return items, len(items) <= limit && (whole || capped), sc.work, nil
 		}
 		// Twice as far back; for more items, as far as they should take at
 		// the bytes per item so far (one read for the whole conversation).
@@ -571,7 +585,7 @@ func readTree(ctx context.Context, h host, agent, path string, size int64, limit
 			next = max(next, read/int64(len(items))*int64(limit)*5/4)
 		}
 		if err := sc.load(ctx, agent, path, sc.to-min(next, readMax)); err != nil {
-			return nil, false, err
+			return nil, false, nil, err
 		}
 	}
 }
@@ -588,7 +602,7 @@ func (h host) chatReadMax() int64 {
 
 // readCodex: Codex's rollouts are a plain list; the tail is read again,
 // further back while it holds fewer items than asked.
-func readCodex(ctx context.Context, h host, path string, size int64, limit int) ([]ChatItem, bool, error) {
+func readCodex(ctx context.Context, h host, path string, size int64, limit int) ([]ChatItem, bool, *ChatWork, error) {
 	readMax := int64(chatReadMax)
 	if h.remote() {
 		readMax = remoteReadMax // one round trip
@@ -596,12 +610,13 @@ func readCodex(ctx context.Context, h host, path string, size int64, limit int) 
 	for n := min(int64(chatTail), readMax); ; n = min(n*2, readMax) {
 		lines, err := tailLinesOn(ctx, h, path, n)
 		if err != nil {
-			return nil, false, err
+			return nil, false, nil, err
 		}
-		items := parseCodexWith(lines, images.resolver(h)) // (it names no pictures by path)
+		b := codexBuilder(lines, images.resolver(h)) // (it names no pictures by path)
+		items := b.items
 		whole, capped := n >= size, n >= readMax
 		if whole || capped || len(items) >= limit {
-			return items, len(items) <= limit && (whole || capped), nil
+			return items, len(items) <= limit && (whole || capped), b.work.done(time.Now()), nil
 		}
 	}
 }
@@ -717,6 +732,10 @@ type block struct {
 		MediaType string `json:"media_type"`
 		Data      string `json:"data"`
 	} `json:"source"`
+	// For the work (work.go): a todo or task call's whole input; the lines
+	// of a result that say how subagents ended.
+	work     json.RawMessage
+	workText string
 }
 
 type message struct {
@@ -731,6 +750,7 @@ type treeEntry struct {
 	msg        *message
 	note       string // compaction and the like
 	at         int    // its place among the entries read
+	when       time.Time
 	parts      []block
 	decoded    bool
 }
@@ -755,8 +775,13 @@ func (e *treeEntry) blocks() []block {
 		switch bl.Type {
 		case "tool_use":
 			bl.Text = toolDetail(bl.Input)
+			if workTools[bl.Name] {
+				bl.work = bl.Input
+			}
 		case "tool_result":
-			bl.Text = firstLines(contentText(bl.Content), 3, 240)
+			full := contentText(bl.Content)
+			bl.Text = firstLines(full, 3, 240)
+			bl.workText = workLines(full)
 		case "image":
 			if bl.Source != nil && bl.Data == "" && bl.Source.Type == "base64" {
 				bl.MediaType, bl.Data = bl.Source.MediaType, bl.Source.Data
@@ -786,6 +811,7 @@ type treeScan struct {
 	entries  map[string]*treeEntry
 	order    []*treeEntry
 	last     string
+	work     *ChatWork // what the last build found (work.go)
 }
 
 func newTreeScan(agent string) *treeScan {
@@ -806,7 +832,7 @@ func (sc *treeScan) load(ctx context.Context, agent, path string, from int64) er
 	fresh.add(lines)
 	fresh.from, fresh.to = first, end
 	sc.loaded, sc.agent, sc.from, sc.to, sc.asked = true, agent, first, end, max(from, 0)
-	sc.entries, sc.order, sc.last = fresh.entries, fresh.order, fresh.last
+	sc.entries, sc.order, sc.last, sc.work = fresh.entries, fresh.order, fresh.last, nil
 	return nil
 }
 
@@ -849,11 +875,18 @@ func (sc *treeScan) add(lines [][]byte) {
 			IsSidechain bool     `json:"isSidechain"`
 			IsMeta      bool     `json:"isMeta"`
 			Message     *message `json:"message"`
+			TS          float64  `json:"ts"`        // tego: unix seconds
+			Timestamp   string   `json:"timestamp"` // Claude Code: RFC 3339
 		}
 		if json.Unmarshal(l, &e) != nil {
 			continue
 		}
 		te := &treeEntry{}
+		if e.TS > 0 {
+			te.when = time.Unix(int64(e.TS), 0)
+		} else if e.Timestamp != "" {
+			te.when, _ = time.Parse(time.RFC3339Nano, e.Timestamp)
+		}
 		if sc.agent == "claude" {
 			if e.UUID == "" || e.IsSidechain {
 				continue
@@ -943,7 +976,7 @@ func (sc *treeScan) build() (items []ChatItem, cut bool) {
 		if !on[e.id] {
 			continue
 		}
-		b.cur = e.id
+		b.cur, b.work.now = e.id, e.when
 		if e.note != "" {
 			b.add(ChatItem{Kind: "note", Text: e.note})
 			continue
@@ -952,6 +985,7 @@ func (sc *treeScan) build() (items []ChatItem, cut bool) {
 			b.message(e.msg.Role, e.blocks())
 		}
 	}
+	sc.work = b.work.done(time.Now())
 	return b.items, cut
 }
 
@@ -1014,10 +1048,11 @@ type chatBuilder struct {
 	byID  map[string][2]int // tool calls waiting for their result: item, tool
 	cur   string            // the entry being read: the id of the items it starts
 	seq   map[string]int    // items started per entry
+	work  *workTracker
 }
 
 func newChatBuilder() *chatBuilder {
-	return &chatBuilder{files: images.addFile, byID: map[string][2]int{}, seq: map[string]int{}}
+	return &chatBuilder{files: images.addFile, byID: map[string][2]int{}, seq: map[string]int{}, work: newWorkTracker()}
 }
 
 // call adds a tool call and remembers where it went, for its result.
@@ -1068,7 +1103,10 @@ func (b *chatBuilder) message(role string, blocks []block) {
 		switch bl.Type {
 		case "text":
 			t := strings.TrimSpace(bl.Text)
-			if t == "" || hiddenText(t) {
+			if role == "user" {
+				b.work.text(t) // background reports
+			}
+			if t == "" || hiddenText(t) || (role == "user" && handback(t)) {
 				continue
 			}
 			if role == "user" {
@@ -1087,8 +1125,14 @@ func (b *chatBuilder) message(role string, blocks []block) {
 			}
 		case "tool_use":
 			b.call(bl.ID, ChatTool{Name: bl.Name, Detail: bl.Text})
+			b.work.call(bl.ID, bl.Name, bl.work)
 		case "tool_result":
 			b.result(bl.ToolUseID, bl.Text, bl.IsError)
+			wt := bl.workText
+			if wt == "" {
+				wt = bl.Text
+			}
+			b.work.result(bl.ToolUseID, wt, bl.IsError)
 		}
 	}
 	if len(userText) == 0 && len(userImages) == 0 {
@@ -1102,7 +1146,7 @@ func (b *chatBuilder) message(role string, blocks []block) {
 
 // Text an agent adds to your message for itself, not something you wrote.
 func hiddenText(t string) bool {
-	for _, p := range []string{"<system-reminder>", "<context-summary>", "<command-name>", "<command-message>", "<local-command-stdout>", "<local-command-caveat>", "Caveat: The messages below", "[Request interrupted"} {
+	for _, p := range []string{"<system-reminder>", "<context-summary>", "<command-name>", "<command-message>", "<local-command-stdout>", "<local-command-caveat>", "Caveat: The messages below", "[Request interrupted", "<task-notification>"} {
 		if strings.HasPrefix(t, p) {
 			return true
 		}
@@ -1179,6 +1223,11 @@ func parseCodex(lines [][]byte) []ChatItem { return parseCodexWith(lines, images
 
 // parseCodexWith: parseCodex, with pictures named by path found by files.
 func parseCodexWith(lines [][]byte, files func(string) string) []ChatItem {
+	return codexBuilder(lines, files).items
+}
+
+// codexBuilder: what parseCodexWith built, the work too.
+func codexBuilder(lines [][]byte, files func(string) string) *chatBuilder {
 	b := newChatBuilder()
 	b.files = files
 	seen := map[string]int{}
@@ -1236,6 +1285,7 @@ func parseCodexWith(lines [][]byte, files func(string) string) []ChatItem {
 			b.add(ChatItem{Kind: kind, Text: strings.Join(parts, "\n\n")})
 		case "function_call", "custom_tool_call", "local_shell_call":
 			b.call(it.CallID, ChatTool{Name: it.Name, Detail: toolDetail(json.RawMessage(it.Arguments))})
+			b.work.call(it.CallID, it.Name, json.RawMessage(it.Arguments))
 		case "function_call_output", "custom_tool_call_output":
 			if _, ok := b.byID[it.CallID]; ok {
 				out := ""
@@ -1254,5 +1304,5 @@ func parseCodexWith(lines [][]byte, files func(string) string) []ChatItem {
 			}
 		}
 	}
-	return b.items
+	return b
 }

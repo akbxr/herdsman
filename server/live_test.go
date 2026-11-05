@@ -185,7 +185,8 @@ func TestLive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	items, _, err := readChatOn(ctx, h, "tego", got, size, mtime, chatMaxItems)
+	r, err := readChatOn(ctx, h, "tego", got, size, mtime, chatMaxItems)
+	items := r.items
 	if err != nil || len(items) != 2 || items[0].Text != "live question" || items[1].Text != "live answer" {
 		t.Errorf("chat: %+v %v", items, err)
 	}

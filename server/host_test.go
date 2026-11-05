@@ -381,11 +381,11 @@ func TestRemoteChat(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		items, _, err := readChatOn(ctx, h, "tego", p, size, mtime, chatMaxItems)
+		r, err := readChatOn(ctx, h, "tego", p, size, mtime, chatMaxItems)
 		if err != nil {
 			t.Fatal(err)
 		}
-		return items
+		return r.items
 	}
 	remote := read(h)
 	if len(remote) != 2 || remote[0].Text != "look at" || len(remote[0].Images) != 1 || remote[1].Text != "a picture" {
