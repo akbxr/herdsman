@@ -29,7 +29,7 @@ import (
 )
 
 // version is bumped by release-please; release builds also set it with -ldflags "-X main.version=…".
-var version = "0.4.0" // x-release-please-version
+var version = "0.5.0" // x-release-please-version
 
 var (
 	terminalRe = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,64}(/[A-Za-z0-9_.-]{1,64})?$`)
