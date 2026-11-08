@@ -43,6 +43,8 @@ data class Agent(
     val cwd: String = "",  // its folder, when known (herdr CLI panes)
 ) {
     val title get() = label ?: app
+    /** A plain shell: no agent runs in it. */
+    val isShell get() = app == "shell"
     /**
      * The name before the session's title: the label, unless it only says
      * the session again (Claude Code names its terminal after it), then the program.

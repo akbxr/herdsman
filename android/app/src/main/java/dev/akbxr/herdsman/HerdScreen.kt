@@ -39,6 +39,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
@@ -327,24 +328,19 @@ fun HerdScreen(
             val spaces = appAgents.map { it.spaceId }.distinct().size
             BackendHeader("Herdr app", if (spaces > 0) plural(spaces, "space") else null, appAgents.size)
         }
+        val row: @Composable (Agent) -> Unit = { agent -> AgentRow(agent, onClick = { onOpen(agent) }, onLongClick = { onActions(agent) }) }
         if (groups.isEmpty()) {
-            items(if (sections) appAgents else rest, key = { it.terminal }) { agent ->
-                AgentRow(agent, onClick = { onOpen(agent) }, onLongClick = { onActions(agent) })
-            }
+            byKind(if (sections) appAgents else rest, "main", row)
         } else groups.forEach { group ->
             item(key = "m:" + group.name) { MachineHeader(group, onClick = onMachines) }
-            items(group.agents, key = { it.terminal }) { agent ->
-                AgentRow(agent, onClick = { onOpen(agent) }, onLongClick = { onActions(agent) })
-            }
+            byKind(group.agents, "m:" + group.name, row)
         }
         if (sections) {
             item(key = "b:cli") {
                 val spaces = herd?.workspaces?.size?.takeIf { it > 0 } ?: cliAgents.map { it.spaceId }.distinct().size
                 BackendHeader("herdr CLI", plural(spaces, "workspace"), cliAgents.size)
             }
-            items(cliAgents, key = { it.terminal }) { agent ->
-                AgentRow(agent, onClick = { onOpen(agent) }, onLongClick = { onActions(agent) })
-            }
+            byKind(cliAgents, "cli", row)
         }
         if (agents.isNotEmpty()) item {
             Text(
@@ -479,6 +475,34 @@ private fun BackendHeader(label: String, detail: String?, count: Int) {
 }
 
 /** The heading of the pinned agents and tabs (or, [label], of the rest after them). */
+/**
+ * One group's terminals: its agents first, then its shells, each under a
+ * small heading when both are there ([group]: unique keys per group).
+ */
+private fun LazyListScope.byKind(terminals: List<Agent>, group: String, row: @Composable (Agent) -> Unit) {
+    val (agents, shells) = terminals.partition { !it.isShell }
+    val both = agents.isNotEmpty() && shells.isNotEmpty()
+    if (both) item(key = "k:$group:agents") { KindHeader("Agents", agents.size) }
+    items(agents, key = { it.terminal }) { row(it) }
+    if (both) item(key = "k:$group:shells") { KindHeader("Shells", shells.size) }
+    items(shells, key = { it.terminal }) { row(it) }
+}
+
+/** "Agents  ───  3": a heading under a backend's or machine's, quieter than it. */
+@Composable
+private fun KindHeader(label: String, count: Int) {
+    Row(
+        Modifier.fillMaxWidth().padding(start = 24.dp, end = 24.dp, top = 10.dp, bottom = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, style = Type.small, color = Ink.dust)
+        Spacer(Modifier.width(10.dp))
+        Box(Modifier.weight(1f).height(1.dp).background(Ink.rule))
+        Spacer(Modifier.width(10.dp))
+        Text(count.toString(), style = Type.small, color = Ink.dust)
+    }
+}
+
 @Composable
 private fun PinnedHeader(count: Int, label: String = "Pinned") {
     Row(

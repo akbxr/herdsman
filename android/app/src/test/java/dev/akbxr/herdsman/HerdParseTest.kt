@@ -146,6 +146,8 @@ class HerdParseTest {
 
         val shell = herd.agents[2]
         assertEquals("shell", shell.app)
+        assertTrue(shell.isShell)
+        assertFalse(herd.agents[0].isShell)
         assertEquals(null, shell.label)
         assertEquals(State.Idle, shell.state)  // unknown
 

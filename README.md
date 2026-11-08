@@ -94,7 +94,8 @@ on, signed in to the same account.
 ## What it does
 
 **Herd.** Every terminal as an ear tag, colored by state: yellow needs you,
-blue working, green done, grey idle. What needs you comes first. Each agent
+blue working, green done, grey idle. What needs you comes first, and each
+group lists its agents first and its plain shells after them. Each agent
 shows its session's title, like "tego · Fix the nav bar". The magnifier
 searches agent, title, tab, space, folder, address, machine and state, and
 every word has to match ("claude pki"). Press and hold a terminal to pin it
