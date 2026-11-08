@@ -214,7 +214,7 @@ func tunnelSetup(hostname, token string) error {
 	for i := 0; i < 30; i++ {
 		if err := pingTunnel(hostname, token); err == nil {
 			fmt.Printf("\nhttps://%s reaches this Mac.\n", hostname)
-			fmt.Println("Phones paired before find it by themselves; pair a new one with herdsman pair.")
+			fmt.Println("A phone paired before learns it the next time it reaches this Mac (over Tailscale); else pair it again with herdsman pair.")
 			return nil
 		}
 		fmt.Print(".")

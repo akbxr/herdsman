@@ -61,8 +61,9 @@ The tunnel forwards to the server on 127.0.0.1 only.
 
 The phone gets every way to the Mac, in the QR code and from the Mac later:
 the local network (with `install -lan`), Tailscale, the tunnel. It uses the
-first that answers and moves back to a faster one when it answers again, so
-phones paired before learn the tunnel by themselves. Uploads through the
+first that answers and moves back to a faster one when it answers again. A
+phone paired before learns the tunnel the next time it reaches the Mac (over
+Tailscale); otherwise pair it again. Uploads through the
 tunnel stop at 100 MB (Cloudflare's free plan). `herdsman tunnel off` stops
 it and leaves the tunnel and the record on Cloudflare.
 
