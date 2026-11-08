@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.5.0](https://github.com/akbxr/herdsman/compare/v0.4.0...v0.5.0) (2026-11-08)
+
+
+### Features
+
+* group the herd's agents and shells apart ([6589a2d](https://github.com/akbxr/herdsman/commit/6589a2d79c94537de444a09c342f8a5fbca55ed8))
+* reach the Mac through a Cloudflare tunnel, and every route it has ([d012244](https://github.com/akbxr/herdsman/commit/d012244fa9421ec12b9cf374c404a9266ce49e9c))
+* show the agent's todo list, subagents and background tasks ([a09dfda](https://github.com/akbxr/herdsman/commit/a09dfda46dd0794e99c7c58f971ef1e89697ac32))
+
+
+### Bug Fixes
+
+* hide the todo bar once all the work is done ([5032bad](https://github.com/akbxr/herdsman/commit/5032bad18c06bd89be6ebd7784f090d10f56aaab))
+
 ## [0.4.0](https://github.com/akbxr/herdsman/compare/v0.3.1...v0.4.0) (2026-11-04)
 
 

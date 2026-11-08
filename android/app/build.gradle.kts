@@ -17,7 +17,7 @@ android {
         targetSdk = 34
         // Bumped by release-please from the Conventional Commits; the code
         // follows from it (1.2.3 -> 10203) so every release installs over the last.
-        versionName = "0.4.0" // x-release-please-version
+        versionName = "0.5.0" // x-release-please-version
         versionCode = versionName!!.split(".").map { it.takeWhile(Char::isDigit).toInt() }
             .let { (major, minor, patch) -> major * 10000 + minor * 100 + patch }
     }
