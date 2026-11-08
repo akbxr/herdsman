@@ -263,20 +263,47 @@ data class AgentEvent(
 
 data class AgentEvents(val seq: Long, val events: List<AgentEvent>, val reset: Boolean, val current: List<AgentEvent>?)
 
-class Api(val base: String, val token: String) {
+/**
+ * The Mac's API, at whichever of its [routes] answers. A request whose route
+ * can't be reached at all moves to another route and is sent once more.
+ */
+class Api(val routes: Routes) {
+    /** One address only (pairing, tests). */
+    constructor(base: String, token: String) : this(Routes.lone(base, token))
 
-    private fun open(path: String, method: String, timeoutMs: Int): HttpURLConnection {
+    val token: String get() = routes.token
+    /** Where requests go now. */
+    val base: String get() = routes.active
+
+    private fun open(path: String, method: String, timeoutMs: Int, base: String = this.base): HttpURLConnection {
         val c = URL(base.trimEnd('/') + path).openConnection() as HttpURLConnection
         c.requestMethod = method
-        c.connectTimeout = 6000
+        c.connectTimeout = Routes.timeoutMs(base).coerceAtLeast(if (routes.all.size > 1) 0 else 6000)
         c.readTimeout = timeoutMs
         c.setRequestProperty("Authorization", "Bearer $token")
         return c
     }
 
-    private suspend fun call(path: String, body: JSONObject? = null, timeoutMs: Int = 10_000): JSONObject =
+    /**
+     * Runs [block] against the route in use; if that route can't be reached
+     * (not a refusal: the request never got there), against the best one
+     * that answers now.
+     */
+    private suspend fun <T> anyRoute(block: suspend (String) -> T): T {
+        val first = base
+        try {
+            return block(first)
+        } catch (e: Throwable) {
+            if (!e.unreachable() || routes.all.size < 2) throw e
+            val next = routes.repick(failed = first) ?: throw e
+            if (next == first) throw e
+            return block(next)
+        }
+    }
+
+    private suspend fun call(path: String, body: JSONObject? = null, timeoutMs: Int = 10_000): JSONObject = anyRoute { base ->
         withContext(Dispatchers.IO) {
-            val c = open(path, if (body == null) "GET" else "POST", timeoutMs)
+            val c = open(path, if (body == null) "GET" else "POST", timeoutMs, base)
             try {
                 if (body != null) {
                     c.doOutput = true
@@ -293,8 +320,14 @@ class Api(val base: String, val token: String) {
                 c.disconnect()
             }
         }
+    }
 
     suspend fun ping(): String = call("/api/ping").optString("host", "your Mac")
+
+    /** Pings, and learns the Mac's routes from the answer. */
+    suspend fun pingAndLearn() {
+        routes.learn(Routes.fromPing(call("/api/ping")))
+    }
 
     suspend fun herd(): Herd = call("/api/state").let { withContext(Dispatchers.Default) { Herd.from(it) } }
 
@@ -345,8 +378,8 @@ class Api(val base: String, val token: String) {
     }
 
     /** A picture of the chat, scaled down on the Mac to fit [maxSide] pixels (ChatImages.kt). */
-    suspend fun image(id: String, maxSide: Int): ByteArray = withContext(Dispatchers.IO) {
-        val c = open("/api/image?id=" + enc(id) + "&w=$maxSide", "GET", 30_000)
+    suspend fun image(id: String, maxSide: Int): ByteArray = anyRoute { base -> withContext(Dispatchers.IO) {
+        val c = open("/api/image?id=" + enc(id) + "&w=$maxSide", "GET", 30_000, base)
         try {
             if (c.responseCode == 401) throw ApiError("The token was not accepted.")
             if (c.responseCode >= 400) throw ApiError("The Mac doesn't have this picture.")
@@ -354,7 +387,7 @@ class Api(val base: String, val token: String) {
         } finally {
             c.disconnect()
         }
-    }
+    } }
 
     /** "/" in the message box: the agent's commands, custom commands and skills. */
     suspend fun commands(terminal: String): List<Command> {
@@ -527,9 +560,9 @@ class Api(val base: String, val token: String) {
      * Agents' status changes after [after] (null: just the cursor and what
      * each terminal reports now). Waits up to [waitS] seconds for one.
      */
-    suspend fun events(after: Long?, waitS: Int = 25): AgentEvents = withContext(Dispatchers.IO) {
+    suspend fun events(after: Long?, waitS: Int = 25): AgentEvents = anyRoute { base -> withContext(Dispatchers.IO) {
         val q = if (after == null) "" else "?after=$after&wait=$waitS"
-        val c = open("/api/events$q", "GET", (waitS + 15) * 1000)
+        val c = open("/api/events$q", "GET", (waitS + 15) * 1000, base)
         try {
             val ok = c.responseCode < 400
             val text = (if (ok) c.inputStream else c.errorStream)?.bufferedReader()?.use { it.readText() } ?: ""
@@ -541,7 +574,7 @@ class Api(val base: String, val token: String) {
         } finally {
             c.disconnect()
         }
-    }
+    } }
 
     // Herdr's own commands, as the Mac's keys and menus do them.
     private fun argvJson(argv: List<String>?) = argv?.let { JSONArray(it) }
@@ -615,6 +648,8 @@ class Api(val base: String, val token: String) {
             val ok = c.responseCode < 400
             val text = (if (ok) c.inputStream else c.errorStream)?.bufferedReader()?.use { it.readText() } ?: ""
             val json = runCatching { JSONObject(text) }.getOrElse { JSONObject() }
+            // Cloudflare's tunnel takes bodies up to 100 MB (its free plan); it answers 413 past that.
+            if (c.responseCode == 413) throw ApiError("$name is too big to send through the tunnel (it takes up to 100 MB). Send it over Tailscale or Wi-Fi.")
             if (!ok) throw ApiError(json.optString("error", "The Mac didn't take $name."))
             json.getString("path")
         } finally {
@@ -622,8 +657,8 @@ class Api(val base: String, val token: String) {
         }
     }
 
-    suspend fun shot(maxSide: Int = 1600): Bitmap = withContext(Dispatchers.IO) {
-        val c = open("/api/shot?max=$maxSide", "GET", 20_000)
+    suspend fun shot(maxSide: Int = 1600): Bitmap = anyRoute { base -> withContext(Dispatchers.IO) {
+        val c = open("/api/shot?max=$maxSide", "GET", 20_000, base)
         try {
             if (c.responseCode == 401) throw ApiError("The token was not accepted.")
             if (c.responseCode >= 400) throw ApiError("The Mac could not take a picture of the window.")
@@ -631,29 +666,47 @@ class Api(val base: String, val token: String) {
         } finally {
             c.disconnect()
         }
-    }
+    } }
 }
 
-/** Everything needed to reach a Mac: from the QR code, or a traded code. */
-data class PairInfo(val address: String, val token: String, val host: String)
+/**
+ * Everything needed to reach a Mac: from the QR code, or a traded code.
+ * [routes]: every way to it, fastest first ([address] among them).
+ */
+data class PairInfo(val address: String, val token: String, val host: String, val routes: List<String> = listOf(address))
 
 /** The two ways to pair: the QR code's link, or address + six-digit code. */
 object PairFlow {
-    /** Reads herdsman://pair?url=…&token=…&host=… (what the QR code holds). */
+    private fun isUrl(s: String) = s.startsWith("http://") || s.startsWith("https://")
+
+    /** Reads herdsman://pair?url=…&routes=…&token=…&host=… (what the QR code holds). */
     fun parseLink(text: String): PairInfo? {
         val uri = runCatching { android.net.Uri.parse(text.trim()) }.getOrNull() ?: return null
         if (uri.scheme != "herdsman" || uri.host != "pair") return null
-        val url = uri.getQueryParameter("url")?.takeIf { it.startsWith("http://") || it.startsWith("https://") } ?: return null
+        val url = uri.getQueryParameter("url")?.takeIf(::isUrl) ?: return null
         val token = uri.getQueryParameter("token")?.takeIf { it.length >= 32 } ?: return null
-        return PairInfo(url, token, uri.getQueryParameter("host").orEmpty())
+        val routes = uri.getQueryParameter("routes")?.split(',')?.map { it.trim().trimEnd('/') }?.filter(::isUrl).orEmpty()
+        return PairInfo(url, token, uri.getQueryParameter("host").orEmpty(), routes.ifEmpty { listOf(url) })
     }
 
-    /** "100.64.1.2" → "http://100.64.1.2:7710": the scheme and port are optional when typing. */
+    /**
+     * What was typed, as a URL: "100.64.1.2" → "http://100.64.1.2:7710" (the
+     * Mac's own port), "herdsman.example.com" → "https://herdsman.example.com"
+     * (a tunnel's name: HTTPS, its usual port).
+     */
     fun normalizeAddress(typed: String): String {
         var a = typed.trim().trimEnd('/')
-        if (!a.startsWith("http://") && !a.startsWith("https://")) a = "http://$a"
-        val hostPart = a.substringAfter("://")
-        if (!hostPart.contains(':')) a += ":7710"
+        if (isUrl(a)) {
+            val hostPart = a.substringAfter("://")
+            if (a.startsWith("http://") && !hostPart.contains(':')) a += ":7710"
+            return a
+        }
+        val host = a.substringBefore(':')
+        // Tailscale's names (MagicDNS) and .local reach the Mac's own port, like its addresses.
+        val named = host.contains('.') && host.any { it.isLetter() } && !host.endsWith(".local") && !host.endsWith(".ts.net")
+        if (named) return "https://$a"
+        a = "http://$a"
+        if (!a.substringAfter("://").contains(':')) a += ":7710"
         return a
     }
 
@@ -684,6 +737,15 @@ class Pairing(context: Context) {
     var address: String
         get() = prefs.getString("address", "") ?: ""
         set(v) = prefs.edit().putString("address", v).apply()
+
+    /** Every way to the Mac, fastest first; a pairing from before routes: its address. */
+    var routes: List<String>
+        get() = prefs.getString("routes", null)?.split('\n')?.filter { it.isNotBlank() }?.ifEmpty { null }
+            ?: listOf(address).filter { it.isNotBlank() }
+        set(v) = prefs.edit().putString("routes", v.joinToString("\n")).apply()
+
+    /** The routes to this Mac, shared in the process, remembered as the Mac tells of new ones. */
+    fun liveRoutes(): Routes = Routes.of(routes, token).also { r -> r.onLearned = { routes = it } }
     var token: String
         get() = prefs.getString("token", "") ?: ""
         set(v) = prefs.edit().putString("token", v).apply()
@@ -721,7 +783,7 @@ fun Throwable.advice(): String = when (this) {
     is ApiError -> message ?: "Something went wrong on the Mac."
     is java.net.SocketTimeoutException -> "Your Mac took too long to answer. Check that it is awake."
     is java.net.ConnectException, is java.net.UnknownHostException, is java.net.NoRouteToHostException ->
-        "Can't reach your Mac. Check that herdsman is running and Tailscale is on."
+        "Can't reach your Mac. Check that it's awake and herdsman is running."
     is java.net.MalformedURLException -> "That address doesn't look right. It starts with http://"
     else -> message ?: "Something went wrong."
 }

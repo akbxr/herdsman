@@ -127,7 +127,8 @@ fun AgentScreen(api: Api, terminal: String, agent: Agent?, appScope: CoroutineSc
     controller.onCtrlUsed = { ctrl = false }
 
     val onScreen = rememberOnScreen()
-    val link by rememberLink()
+    val rawLink by rememberLink()
+    val link = rawLink.forRoutes(api.routes)
 
     // The chat: the agent's conversation, read from its transcript (Chat.kt).
     // It shows first for an agent; a shell (no transcript) shows its terminal.
@@ -375,7 +376,8 @@ fun AgentScreen(api: Api, terminal: String, agent: Agent?, appScope: CoroutineSc
 
     // The terminal: attached only while it shows. In a pocket, or on the
     // chat, nothing streams.
-    LaunchedEffect(controller, onScreen, mode) {
+    // Keyed on the route too: moved to another (Wi-Fi gone, the tunnel now), it attaches there.
+    LaunchedEffect(controller, onScreen, mode, api.base) {
         if (onScreen && mode == "terminal") controller.connect(api, terminal)
         else controller.web.evaluateJavascript("window.hr && hr.close()", null)
     }

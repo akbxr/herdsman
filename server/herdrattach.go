@@ -283,6 +283,7 @@ func (s *server) attachHerdr(w http.ResponseWriter, r *http.Request, terminal, p
 	conn.SetReadLimit(1 << 20)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	go wsKeepAlive(ctx, conn) // through the tunnel too, where an idle socket is closed
 	poll, throttle := herdrPoll, herdrThrottle
 
 	var wmu sync.Mutex // one writer at a time: a size message and its frame stay together

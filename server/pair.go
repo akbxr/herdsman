@@ -89,10 +89,19 @@ func redeem(tokenFile, code string) error {
 	return nil
 }
 
-// pairLink is what the QR code holds; the app opens it.
-func pairLink(base, token, host string) string {
-	q := url.Values{"url": {base}, "token": {token}, "host": {host}}
+// pairLink is what the QR code holds; the app opens it. routes: every way
+// to this Mac, fastest first; url: the one an app from before routes uses.
+func pairLink(routes []string, token, host string) string {
+	q := url.Values{"url": {preferredForOldApps(routes)}, "token": {token}, "host": {host}}
+	if len(routes) > 1 {
+		q.Set("routes", strings.Join(routes, ","))
+	}
 	return "herdsman://pair?" + q.Encode()
+}
+
+// routeText is a route as typed in the app: "100.1.2.3:7710", "herdsman.example.com".
+func routeText(route string) string {
+	return strings.TrimPrefix(strings.TrimPrefix(route, "http://"), "https://")
 }
 
 // qrText draws a QR code for a terminal: two modules per character cell
@@ -127,18 +136,25 @@ func qrText(text string) (string, error) {
 }
 
 // printPairing shows the QR code, the code and the address for pairing.
-func printPairing(w io.Writer, base, token, host, tokenFile string) error {
+func printPairing(w io.Writer, routes []string, token, host, tokenFile string) error {
 	code, err := newCode(tokenFile)
 	if err != nil {
 		return err
 	}
-	art, err := qrText(pairLink(base, token, host))
+	art, err := qrText(pairLink(routes, token, host))
 	if err != nil {
 		return err
 	}
 	fmt.Fprintf(w, "\nPair a phone: open Herdsman and tap Scan the code.\n\n%s\n", art)
 	fmt.Fprintf(w, "No camera? Type the address and this code (works once, for 10 minutes):\n\n")
-	fmt.Fprintf(w, "  address  %s\n  code     %s %s\n\n", strings.TrimPrefix(base, "http://"), code[:3], code[3:])
+	for i, r := range routes {
+		label := "address "
+		if i > 0 {
+			label = "     or "
+		}
+		fmt.Fprintf(w, "  %s %s\n", label, routeText(r))
+	}
+	fmt.Fprintf(w, "  code     %s %s\n\n", code[:3], code[3:])
 	return nil
 }
 

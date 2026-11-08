@@ -56,6 +56,8 @@ type server struct {
 	transcriptOf func(ctx context.Context, terminal string) string
 
 	titles titleCache // the session titles of the agents' terminals (titles.go)
+
+	routes routeSource // the ways a phone reaches this server (routes.go)
 }
 
 func usage() {
@@ -65,6 +67,10 @@ Usage:
   herdsman install     run at login (launchd), and show a QR code to pair a phone
   herdsman pair        show the QR code and a fresh pairing code
   herdsman status      whether it runs, where, and if it answers
+  herdsman tunnel <hostname>
+                       reach this Mac from anywhere through a Cloudflare tunnel,
+                       e.g. herdsman tunnel herdsman.example.com (a domain on
+                       your Cloudflare account); herdsman tunnel off stops it
   herdsman uninstall   stop running at login (keeps the token)
   herdsman [serve]     serve in this terminal
 
@@ -80,7 +86,8 @@ func main() {
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		cmd, args = args[0], args[1:]
 	}
-	addr := flag.String("addr", "", "listen address (default: this Mac's Tailscale IP, port 7710)")
+	addr := flag.String("addr", "", "listen only there (default: 127.0.0.1 and this Mac's Tailscale IP, port 7710)")
+	lan := flag.Bool("lan", false, "also listen on the local network, so a phone on the same Wi-Fi connects directly (plain HTTP: only on networks you trust)")
 	tokenFile := flag.String("token-file", defaultTokenFile(), "file holding the access token (created if missing)")
 	newToken := flag.Bool("new-token", false, "replace the token (phones paired before must pair again)")
 	awake := flag.Bool("awake", true, "keep the Mac from sleeping on its own while agents work (-awake=false to let it)")
@@ -90,7 +97,7 @@ func main() {
 
 	switch cmd {
 	case "serve":
-	case "pair", "status", "install":
+	case "pair", "status", "install", "tunnel":
 		token, err := loadToken(*tokenFile, *newToken)
 		if err != nil {
 			log.Fatalf("token: %v", err)
@@ -98,11 +105,23 @@ func main() {
 		var run func() error
 		switch cmd {
 		case "pair":
-			run = func() error { return pairNow(*addr, string(token), *tokenFile) }
+			run = func() error { return pairNow(localRoutes(*addr, *lan), string(token), *tokenFile) }
 		case "status":
-			run = func() error { return status(*addr, string(token)) }
+			run = func() error { return status(*addr, localRoutes(*addr, *lan), string(token)) }
 		case "install":
-			run = func() error { return install(*addr, string(token), *tokenFile, *awake) }
+			run = func() error { return install(*addr, *lan, string(token), *tokenFile, *awake) }
+		case "tunnel":
+			run = func() error {
+				switch a := flag.Args(); {
+				case len(a) == 0:
+					tunnelStatus(string(token))
+					return nil
+				case a[0] == "off":
+					return tunnelOff()
+				default:
+					return tunnelSetup(a[0], string(token))
+				}
+			}
 		}
 		if err := run(); err != nil {
 			fmt.Fprintln(os.Stderr, "herdsman:", err)
@@ -133,22 +152,10 @@ func main() {
 	// (<hc from="t7">…</hc>) and make what it starts its children.
 	os.Unsetenv("HC_TERMINAL_ID")
 	os.Unsetenv("HC_TERMINAL_SOCKET")
-	listen := *addr
-	if listen == "" {
-		// Under launchd this starts at login, often before Tailscale is up: wait for it.
-		ip := tailscaleIP()
-		if ip == "" {
-			log.Print("waiting for Tailscale (or pass -addr, e.g. -addr 127.0.0.1:7710 behind an SSH tunnel)")
-			for ip == "" {
-				time.Sleep(3 * time.Second)
-				ip = tailscaleIP()
-			}
-		}
-		listen = net.JoinHostPort(ip, "7710")
-	}
 	host, _ := os.Hostname()
 
-	s := &server{token: token, tokenFile: *tokenFile, herdr: findTool("herdr-app"), hc: findTool("hc"), herdrSock: defaultHerdrSock()}
+	s := &server{token: token, tokenFile: *tokenFile, herdr: findTool("herdr-app"), hc: findTool("hc"), herdrSock: defaultHerdrSock(),
+		routes: localRoutes(*addr, *lan)}
 	if s.shotDir, err = os.MkdirTemp("", "herdsman-"); err != nil {
 		log.Fatal(err)
 	}
@@ -204,19 +211,19 @@ func main() {
 		go s.awake.run(context.Background())
 	}
 
-	srv := &http.Server{Addr: listen, Handler: logRequests(mux), ReadHeaderTimeout: 10 * time.Second}
-	ln, err := net.Listen("tcp", listen)
-	if err != nil {
-		log.Fatal(err)
-	}
-	log.Printf("herdsman %s listening on http://%s", version, listen)
+	srv := &http.Server{Handler: logRequests(mux), ReadHeaderTimeout: 10 * time.Second}
 	// The QR code is for a person at a terminal, not for launchd's log.
 	if isTerminal(os.Stdout) {
-		if err := printPairing(os.Stdout, "http://"+listen, string(token), host, *tokenFile); err != nil {
-			log.Printf("pairing code: %v", err)
-		}
+		go func() {
+			time.Sleep(300 * time.Millisecond) // after the listening lines
+			if routes := s.routes.routes(); len(routes) > 0 {
+				if err := printPairing(os.Stdout, routes, string(token), host, *tokenFile); err != nil {
+					log.Printf("pairing code: %v", err)
+				}
+			}
+		}()
 	}
-	log.Fatal(srv.Serve(ln))
+	log.Fatal(listenPlan{fixed: *addr, lan: *lan}.serve(srv))
 }
 
 func defaultTokenFile() string {
@@ -347,7 +354,7 @@ func logRequests(h http.Handler) http.Handler {
 		if quiet[r.URL.Path] && sw.code < 400 {
 			return
 		}
-		log.Printf("%s %s %s %d (%s)", r.RemoteAddr, r.Method, r.URL.Path, sw.code, time.Since(start).Round(time.Millisecond))
+		log.Printf("%s %s %s %d (%s)", clientIP(r), r.Method, r.URL.Path, sw.code, time.Since(start).Round(time.Millisecond))
 	})
 }
 
@@ -398,7 +405,7 @@ func decode(r *http.Request, v any) error {
 
 func (s *server) ping(w http.ResponseWriter, r *http.Request) {
 	host, _ := os.Hostname()
-	writeJSON(w, map[string]any{"ok": "true", "version": version, "host": host, "awake": s.awake != nil && s.awake.on()})
+	writeJSON(w, map[string]any{"ok": "true", "version": version, "host": host, "awake": s.awake != nil && s.awake.on(), "routes": s.routes.routes()})
 }
 
 // state is what the phone polls: the window (status) and its spaces, tabs

@@ -6,7 +6,7 @@ Everything is under `/api` and needs `Authorization: Bearer <token>`, except
 | Method | Path | Does |
 |---|---|---|
 | POST | `/pair` | `{code}` → `{token, host}`; no token needed, the code is the key |
-| GET | `/ping` | host name, version |
+| GET | `/ping` | host name, version; `routes`: every way phones reach this Mac, fastest first (`http://<LAN ip>:7710` with `-lan`, `http://<Tailscale ip>:7710`, `https://<tunnel hostname>`) |
 | GET | `/state` | `herdr-app status` + `herdr-app ls`, and `machines`: the array of `hc machine ls --json` (left out when hc can't list them); `herdr`: the herdr CLI's default session, `session.snapshot`'s snapshot `{workspaces, tabs, panes, agents, layouts, focused_*_id, …}` (left out when herdr doesn't answer within 2 s). Either the Herdr app or the herdr CLI is enough: without the app, `status` and `ls` are left out; 502 only when neither answers. `titles`: `{terminal: title}`, the title of the session each agent works in (tego and Claude Code, on this Mac), refreshed in the background at most every 5 s while asked |
 | GET | `/shot?max=1600` | JPEG of the window |
 | POST | `/do` | `{command, args?}` → `herdr-app do` |
@@ -65,6 +65,8 @@ Key names for `/keys`, hc's on the left:
 | `alt+x`, `M-x` | `alt+x` |
 | `tab`, `backspace`, `bs`, `space`, arrows, `f1`…`f12`, single characters | the same |
 | `home`, `end`, `pgup`, `pgdn`, `del`, `insert` | typed as xterm sequences (`ESC[H`, `ESC[5~`, …) |
+
+Both `/attach` streams are pinged every 30 s, so a quiet terminal stays open through Cloudflare (which closes a WebSocket idle for 100 s).
 
 herdr has no byte stream of a pane, so `/attach` repaints instead. It sends
 `{"type":"size","cols","rows","snapshot":true}`, then the history and screen

@@ -14,9 +14,11 @@ tasks, and type in their terminals.
 ## Safety
 
 Whoever has the token can type into your terminals, so they can run commands
-on your Mac. The server listens only on the Mac's Tailscale address, which
-only your own devices can reach. Don't put it on the internet.
-`herdsman -new-token` replaces the token, and every phone pairs again.
+on your Mac. The server listens on 127.0.0.1 and on the Mac's Tailscale
+address, which only your own devices reach. A tunnel (below) puts it on the
+internet: then the 192-bit token is all that keeps others out, and Cloudflare
+sees the traffic. `herdsman -new-token` replaces the token, and every phone
+pairs again.
 
 ## Install the server
 
@@ -40,17 +42,29 @@ tries.
 | Command | Does |
 |---|---|
 | `herdsman pair` | a new QR code and code, for another phone |
-| `herdsman status` | whether it runs and answers |
+| `herdsman status` | whether it runs and answers, and where phones reach it |
+| `herdsman tunnel <hostname>` | reach the Mac from anywhere, without Tailscale (below) |
 | `herdsman uninstall` | stop starting at login |
 | `herdsman` | run in the terminal, without launchd |
 
 The log is `~/Library/Logs/herdsman.log`, the token
 `~/.config/herdsman/token`.
 
-Without Tailscale, use an SSH tunnel. Run
-`herdsman install -addr 127.0.0.1:7710` on the Mac and
-`ssh -L 7710:127.0.0.1:7710 you@<mac>` on the phone (Termux), then pair with
-`127.0.0.1:7710`.
+### Without Tailscale: a Cloudflare tunnel
+
+With a domain on your Cloudflare account, `herdsman tunnel
+herdsman.example.com` makes `https://herdsman.example.com` reach the Mac from
+any network. It needs `cloudflared` (`brew install cloudflared`). The first
+time, a browser asks you to log in to Cloudflare and pick the domain. Then it
+makes a tunnel, adds the DNS record and keeps `cloudflared` running at login.
+The tunnel forwards to the server on 127.0.0.1 only.
+
+The phone gets every way to the Mac, in the QR code and from the Mac later:
+the local network (with `install -lan`), Tailscale, the tunnel. It uses the
+first that answers and moves back to a faster one when it answers again, so
+phones paired before learn the tunnel by themselves. Uploads through the
+tunnel stop at 100 MB (Cloudflare's free plan). `herdsman tunnel off` stops
+it and leaves the tunnel and the record on Cloudflare.
 
 ## Install the app
 
@@ -72,8 +86,9 @@ signed with the release key if `~/.android/herdsman-release.properties`
 exists, otherwise with your debug key, and then you have to uninstall a
 published APK first.
 
-Open Herdsman and scan the QR code, or type the address and the six-digit
-code. The phone needs Tailscale on, signed in to the same account.
+Open Herdsman and scan the QR code, or type the address (the tunnel's name
+works too) and the six-digit code. Without a tunnel the phone needs Tailscale
+on, signed in to the same account.
 
 ## What it does
 

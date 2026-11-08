@@ -79,6 +79,9 @@ fun rememberLink(): State<Link> {
     return state
 }
 
+/** No VPN only matters when every way to the Mac goes through Tailscale. */
+fun Link.forRoutes(routes: Routes?): Link = if (this == Link.NoVpn && routes != null && !routes.needsVpn) Link.Up else this
+
 /** What to say when the Mac can't be reached, given what the phone knows. */
 fun Throwable.advice(link: Link): String = when {
     this is ApiError -> advice()

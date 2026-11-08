@@ -64,7 +64,7 @@ private fun App(link: String?, onLinkUsed: () -> Unit, openFromNotification: Str
     val context = LocalContext.current
     val pairing = remember { Pairing(context) }
     var api by remember {
-        mutableStateOf(if (pairing.address.isNotBlank() && pairing.token.isNotBlank()) Api(pairing.address, pairing.token) else null)
+        mutableStateOf(if (pairing.address.isNotBlank() && pairing.token.isNotBlank()) Api(pairing.liveRoutes()) else null)
     }
     var host by remember { mutableStateOf(pairing.host) }
     var section by rememberSaveable { mutableStateOf(Section.Herd) }
@@ -82,9 +82,21 @@ private fun App(link: String?, onLinkUsed: () -> Unit, openFromNotification: Str
     var problem by remember { mutableStateOf<String?>(null) }
     val onScreen = rememberOnScreen()
     // A network change (Tailscale back on, Wi-Fi back) asks again at once.
-    val net by rememberLink()
+    val rawNet by rememberLink()
+    val net = rawNet.forRoutes(api?.routes)  // "Tailscale is off" only when nothing else reaches the Mac
     var herdTick by remember { mutableStateOf(0) }  // bumped: ask again now (a machine added or removed)
-    LaunchedEffect(api, onScreen, net, herdTick) {
+    // The ways to the Mac: back to a faster one when it answers again (a
+    // network change, or every minute), and the Mac's list learned.
+    LaunchedEffect(api, onScreen, rawNet) {
+        val a = api ?: return@LaunchedEffect
+        if (!onScreen) return@LaunchedEffect
+        while (true) {
+            runCatching { a.routes.recheck() }
+            runCatching { a.pingAndLearn() }
+            delay(60_000)
+        }
+    }
+    LaunchedEffect(api, onScreen, rawNet, herdTick) {
         val a = api ?: return@LaunchedEffect
         if (!onScreen) return@LaunchedEffect
         while (true) {
@@ -108,13 +120,14 @@ private fun App(link: String?, onLinkUsed: () -> Unit, openFromNotification: Str
                 onPaired = { info ->
                     val keepNotify = pairing.notify
                     pairing.address = info.address; pairing.token = info.token; pairing.host = info.host
+                    pairing.routes = info.routes.ifEmpty { listOf(info.address) }
                     if (keepNotify) { Watch.stop(context); pairing.notify = true; Watch.start(context) }
                     host = info.host
                     herd = null
                     openTerminal = null
                     newTask = false
                     resumeList = false
-                    api = Api(info.address, info.token)
+                    api = Api(pairing.liveRoutes().also { it.prefer(info.address) })
                 },
                 onKeepCurrent = if (a != null) onLinkUsed else null,
             )

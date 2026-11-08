@@ -74,7 +74,12 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 
 /** Checks a pairing by asking the Mac its name with the token. */
-suspend fun confirmPairing(info: PairInfo): PairInfo = info.copy(host = Api(info.address, info.token).ping())
+suspend fun confirmPairing(info: PairInfo): PairInfo {
+    // The QR code lists every way to the Mac: pair over the best that answers
+    // here (Tailscale may be off on this phone, the tunnel works anywhere).
+    val at = (if (info.routes.size > 1) Routes.probeAll(info.routes, info.token) else null) ?: info.address
+    return info.copy(address = at, host = Api(at, info.token).ping())
+}
 
 /**
  * Pairing: scan the QR code `herdsman pair` shows on the Mac, or type

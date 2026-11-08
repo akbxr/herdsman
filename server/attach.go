@@ -142,6 +142,7 @@ func (s *server) attach(w http.ResponseWriter, r *http.Request) {
 	conn.SetReadLimit(1 << 20)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	go wsKeepAlive(ctx, conn) // through the tunnel too, where an idle socket is closed
 
 	sendJSON := func(v any) {
 		b, _ := json.Marshal(v)

@@ -133,7 +133,7 @@ class WatchService : Service() {
     private suspend fun watch() {
         val p = Pairing(this)
         if (!p.notify || p.address.isEmpty()) { stopSelf(); return }
-        val api = Api(p.address, p.token).also { this.api = it }
+        val api = Api(p.liveRoutes()).also { this.api = it }
         var cursor: Long? = null
         var failures = 0
         while (scope.isActive) {
@@ -156,7 +156,7 @@ class WatchService : Service() {
                 }
                 failures++
                 if (failures >= 2) updateOngoing(
-                    when (Net.link(this)) {
+                    when (Net.link(this).forRoutes(api.routes)) {
                         Link.Offline -> "This phone is offline. Notifications resume when it's back."
                         Link.NoVpn -> "Tailscale is off on this phone: no notifications until it's on."
                         Link.Up -> "Can't reach $host. It may be asleep. Trying again…"

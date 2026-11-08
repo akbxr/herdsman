@@ -103,7 +103,7 @@ object Answer {
         scope.launch { delay(8_000); finish() }
         scope.launch {
             try {
-                Api(p.address, p.token).answer(terminal, seq, answer, text, option)
+                Api(p.liveRoutes()).answer(terminal, seq, answer, text, option)
                 // The agent moves on and the watch takes the notification away;
                 // this is for a reply, whose notification would spin until then.
                 nm.cancel(id)

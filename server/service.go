@@ -43,24 +43,15 @@ func isTerminal(f *os.File) bool {
 	return err == nil && fi.Mode()&os.ModeCharDevice != 0
 }
 
-// address is where the server listens (or will): -addr, else Tailscale.
-func address(flagAddr string) (string, error) {
-	if flagAddr != "" {
-		return flagAddr, nil
-	}
-	if ip := tailscaleIP(); ip != "" {
-		return net.JoinHostPort(ip, "7710"), nil
-	}
-	return "", errors.New("Tailscale is off: turn it on (menu bar, or tailscale up), then run this again")
-}
+var errNoRoute = errors.New("nothing reaches this Mac yet: turn Tailscale on (menu bar, or tailscale up), or set up a tunnel (herdsman tunnel <hostname>), then run this again")
 
-func pairNow(flagAddr, token, tokenFile string) error {
-	addr, err := address(flagAddr)
-	if err != nil {
-		return err
+func pairNow(rs routeSource, token, tokenFile string) error {
+	routes := rs.routes()
+	if len(routes) == 0 {
+		return errNoRoute
 	}
 	host, _ := os.Hostname()
-	return printPairing(os.Stdout, "http://"+addr, token, host, tokenFile)
+	return printPairing(os.Stdout, routes, token, host, tokenFile)
 }
 
 func xmlText(s string) string {
@@ -145,7 +136,7 @@ func launchctl(args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), err
 }
 
-func install(flagAddr, token, tokenFile string, awake bool) error {
+func install(flagAddr string, lan bool, token, tokenFile string, awake bool) error {
 	bin := installedBinary()
 	if err := copyBinary(bin); err != nil {
 		return fmt.Errorf("copy to %s: %w", bin, err)
@@ -159,6 +150,9 @@ func install(flagAddr, token, tokenFile string, awake bool) error {
 	}
 	if !awake {
 		args = append(args, "-awake=false")
+	}
+	if lan {
+		args = append(args, "-lan")
 	}
 	if err := os.MkdirAll(filepath.Dir(plistPath()), 0o755); err != nil {
 		return err
@@ -178,14 +172,23 @@ func install(flagAddr, token, tokenFile string, awake bool) error {
 	}
 	fmt.Printf("Installed: herdsman now starts at login and restarts if it stops.\n")
 	fmt.Printf("  binary  %s\n  agent   %s\n  log     %s\n", bin, plistPath(), logPath())
+	if _, ok := readTunnel(); ok {
+		if bin := findCloudflared(); bin == "" {
+			fmt.Println("The tunnel needs cloudflared, and it isn't installed: brew install cloudflared, then install again.")
+		} else if err := loadTunnelAgent(bin); err != nil {
+			fmt.Printf("Tunnel: %v\n", err)
+		} else {
+			fmt.Printf("  tunnel  https://%s\n", tunnelHostname())
+		}
+	}
 
-	addr, err := address(flagAddr)
-	if err != nil {
-		fmt.Printf("\nIt waits for Tailscale. Once Tailscale is on, run herdsman pair to pair a phone.\n")
+	routes := localRoutes(flagAddr, lan).routes()
+	if len(routes) == 0 {
+		fmt.Printf("\nNothing reaches it yet: turn Tailscale on, or set up a tunnel (herdsman tunnel <hostname>), then run herdsman pair.\n")
 		return nil
 	}
 	host, _ := os.Hostname()
-	return printPairing(os.Stdout, "http://"+addr, token, host, tokenFile)
+	return printPairing(os.Stdout, routes, token, host, tokenFile)
 }
 
 func uninstall() error {
@@ -193,6 +196,9 @@ func uninstall() error {
 	loaded := err == nil
 	if rmErr := os.Remove(plistPath()); rmErr != nil && !os.IsNotExist(rmErr) {
 		return rmErr
+	}
+	if err := unloadTunnelAgent(); err != nil { // nothing for it to reach now
+		return err
 	}
 	if !loaded && !strings.Contains(out, "No such process") && !strings.Contains(out, "Could not find") {
 		fmt.Println("It was not running.")
@@ -204,7 +210,7 @@ func uninstall() error {
 
 var pidRe = regexp.MustCompile(`(?m)^\s*pid = (\d+)`)
 
-func status(flagAddr, token string) error {
+func status(flagAddr string, rs routeSource, token string) error {
 	if _, err := os.Stat(plistPath()); err != nil {
 		fmt.Println("Not installed: run herdsman install to start it at login.")
 	} else if out, err := launchctl("print", launchdTarget()+"/"+agentLabel); err != nil {
@@ -215,10 +221,9 @@ func status(flagAddr, token string) error {
 		fmt.Printf("Installed, but not running right now. Log: %s\n", logPath())
 	}
 
-	addr, err := address(flagAddr)
-	if err != nil {
-		fmt.Println(err)
-		return nil
+	addr := hostPort(flagAddr)
+	if addr == "" {
+		addr = net.JoinHostPort("127.0.0.1", port) // where it always listens
 	}
 	req, _ := http.NewRequest("GET", "http://"+addr+"/api/ping", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -237,9 +242,20 @@ func status(flagAddr, token string) error {
 		fmt.Printf("Address http://%s: answers, but refused this token (%d).\n", addr, resp.StatusCode)
 		return nil
 	}
-	fmt.Printf("Address http://%s: answering (version %s). Pair a phone: herdsman pair\n", addr, ping.Version)
+	fmt.Printf("Answering (version %s). Pair a phone: herdsman pair\n", ping.Version)
 	if ping.Awake {
 		fmt.Println("Keeping the Mac awake: an agent is working or waiting (or was, minutes ago).")
+	}
+	if routes := rs.routes(); len(routes) > 0 {
+		fmt.Println("Phones reach it at:")
+		for _, r := range routes {
+			fmt.Printf("  %s\n", r)
+		}
+	} else {
+		fmt.Println(errNoRoute)
+	}
+	if flagAddr == "" {
+		tunnelStatus(token)
 	}
 	return nil
 }
