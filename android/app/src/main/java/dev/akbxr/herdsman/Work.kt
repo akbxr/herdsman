@@ -67,6 +67,11 @@ data class ChatWork(val todos: List<WorkTodo> = emptyList(), val agents: List<Wo
     /** What it works on now: the first in progress, else the first not done. */
     val current get() = todos.firstOrNull { it.status == "in_progress" } ?: todos.firstOrNull { it.status != "completed" }
     val isEmpty get() = todos.isEmpty() && agents.isEmpty()
+    /** Something still to do: a todo not done, or a subagent running. */
+    val live get() = running > 0 || todos.any { it.status != "completed" }
+
+    /** What the bar above the message box shows while the agent is in [state]: nothing once all is done. */
+    fun shown(state: String?): ChatWork? = seenWhile(state).takeIf { it.live }
 
     /**
      * As it stands while the agent is in [state]: a subagent of a task call
@@ -111,7 +116,8 @@ fun shortDuration(ms: Long): String {
 
 /**
  * One line above the message box: the todo list's count and what it works
- * on, and the subagents running. Tap: [onOpen] shows all of it.
+ * on, and the subagents running. Tap: [onOpen] shows all of it. Shown only
+ * while there is something left ([ChatWork.shown]).
  */
 @Composable
 fun WorkBar(work: ChatWork, onOpen: () -> Unit, modifier: Modifier = Modifier) {

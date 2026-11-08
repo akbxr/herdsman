@@ -609,8 +609,8 @@ fun AgentScreen(api: Api, terminal: String, agent: Agent?, appScope: CoroutineSc
                 },
                 onOpenTerminal = { userMode = "terminal" },
             )
-            chat?.work?.let { w ->
-                WorkBar(w.seenWhile(chat?.status?.state), onOpen = { workOpen = true }, modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp))
+            chat?.work?.shown(chat?.status?.state)?.let { w ->
+                WorkBar(w, onOpen = { workOpen = true }, modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp))
             }
         } } },
         link = link,

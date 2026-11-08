@@ -108,7 +108,7 @@ chat loads the last 120 messages and older ones as you scroll up. Search
 covers all of it. Works for tego, Claude Code and Codex.
 
 A bar above the message box shows the agent's todo list (done count and
-the item in progress) and how many subagents run. Tap it for the whole list
+the item in progress) and how many subagents run, until all of it is done. Tap it for the whole list
 and every subagent, with what it was asked and its report. This reads tego's
 todo, task and background tasks, Claude Code's todos and Agent tool, and
 Codex's plan.

@@ -152,7 +152,7 @@ class ScreensSnapshotTest {
             chatSlot = {
                 Column(Modifier.fillMaxSize()) {
                     ChatView(items, status, "tego", modifier = Modifier.weight(1f), prompt = prompt, pending = pending, onAnswer = {}, onOpenTerminal = {})
-                    work?.let { WorkBar(it.seenWhile(status?.state), onOpen = {}, modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) }
+                    work?.shown(status?.state)?.let { WorkBar(it, onOpen = {}, modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) }
                 }
             },
             changesSlot = changesSlot ?: { ChangesView(changes, changes?.files.orEmpty()) },

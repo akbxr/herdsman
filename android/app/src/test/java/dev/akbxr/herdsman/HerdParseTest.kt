@@ -268,5 +268,14 @@ class HerdParseTest {
         // No work: none.
         assertEquals(null, ChatLog.from(JSONObject("""{"agent":"tego","items":[],"work":{}}""")).work)
         assertEquals("1h7m", shortDuration(4_020_000))
+        // The bar: shown while something is left, gone once all is done.
+        assertEquals(w, w.shown("working"))
+        val done = ChatWork(todos = listOf(WorkTodo("A", "completed"), WorkTodo("B", "completed")), agents = listOf(WorkAgent("X", "done")))
+        assertEquals(null, done.shown("working"))
+        assertEquals(null, done.shown("idle"))
+        // All todos done, a background subagent still running: shown.
+        assertEquals(true, done.copy(agents = listOf(WorkAgent("Bg", "running", background = true))).shown("idle") != null)
+        // A task call's subagent "running" after the agent stopped is stopped: nothing left.
+        assertEquals(null, done.copy(agents = listOf(WorkAgent("Fg", "running"))).shown("idle"))
     }
 }
